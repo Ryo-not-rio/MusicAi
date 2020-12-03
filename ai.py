@@ -191,7 +191,7 @@ def train(epochs=10, cont=False, lr=10.0, checkpoint=tf.train.latest_checkpoint(
     else:
         remove_checkpoints()
 
-    # Dynamically creating the scheduler to decrease epoch
+    # Dynamically creating the scheduler to decrease learning rate
     def get_scheduler(ini_lr=lr):
         def schedule(epoch, l_r):
             dec_epoch = 10
