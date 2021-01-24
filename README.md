@@ -2,9 +2,10 @@
 This is an attempt to use neural networks to generate music from scratch. Tensorflow is used for the neural network process and a module called mido is used to process music data. This is further explained in later sections.
 
 ## Table of contents
-[Data used](#data_used)
-[Approach 1](#approach_1)
-[Midi file format](#Midi_format)
+- [Data used](#data_used)
+- [Approach 1](#approach_1)
+- [Midi file format](#Midi_format)
+
 
 ## Data used
 The midi file format is used as the dataset. Midi files are used primarily to encode music for music making making software and electronic instruments. It is an ideal format for this use case as music is denoted as a sequence of events such as note on and note off. Furthermore, the meta data for each file contains what instruments are used and how many tracks are in the file which can be used to narrow down the style of music.
