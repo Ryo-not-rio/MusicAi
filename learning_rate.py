@@ -1,3 +1,7 @@
+"""
+Find the optimal learning rate.
+Currently not in use
+"""
 import numpy as np
 import tensorflow.keras as keras
 from tensorflow.keras import callbacks

@@ -1,6 +1,9 @@
 import os
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+"""
+Handles all the machine learning aspects
+"""
 
 import tensorflow as tf
 from tensorflow import keras
@@ -9,6 +12,8 @@ import shutil
 from math import log
 import pickle
 
+
+### Configuring gpu for training
 try:
     physical_devices = tf.config.list_physical_devices('GPU')
     tf.config.experimental.set_memory_growth(physical_devices[0], enable=True)
@@ -30,6 +35,9 @@ def split_input(chunk):
     return chunk[:-1], chunk[1:]
 
 
+"""
+Load data from the data folder and put it in a single list
+"""
 def load_raw_data():
     data = []
     directory = os.fsencode("data")
@@ -45,7 +53,7 @@ def load_raw_data():
 def pad(d):
     if d.shape[0] < seq_length * BATCH_SIZE:
         pad_length = seq_length * BATCH_SIZE - d.shape[0]
-        tiles = p.tile([[0, 0, 0, 0]], (pad_length, 1))
+        tiles = np.tile([[0, 0, 0, 0]], (pad_length, 1))
         d = np.concatenate((d, tiles))
     else:
         num_times = d.shape[0] // (seq_length * BATCH_SIZE)
@@ -60,10 +68,13 @@ def cut(d):
     length = d.shape[0] * (d.shape[0] // (seq_length * BATCH_SIZE))
     return d[:length]
 
-
+"""
+Get data from data folder, process it using the passed function,
+concatenate the result.
+"""
 def process_data(function):
     data = load_raw_data()
-    data = np.array(np.array(list(map(function, data))))
+    data = np.array(list(map(function, data)))
     data = np.vstack(data)
     return data
 
@@ -99,6 +110,7 @@ vels = get_vocab("vels.pkl", data[:, 1])
 times = get_vocab("times.pkl", data[:, 2])
 lengths = get_vocab("lengths.pkl", data[:, 3])
 
+
 note2idx = {i: k for k, i in enumerate(notes)}
 idx2note = np.array(notes)
 vel2idx = {i: k for k, i in enumerate(vels)}
@@ -108,8 +120,15 @@ idx2time = np.array(times)
 length2idx = {i: k for k, i in enumerate(lengths)}
 idx2length = np.array(lengths)
 
+# Changing all the data values to indexes within the vocabulary
 indexed = np.array(list(map(lambda x: to_index(x), data)))
 
+
+"""
+Creating a tensorflow dataset.
+X value - list of notes where each note is represented as [note, velocity, time, length]
+y value - Dictionary containing a list of the correct result for each attribute.
+"""
 X, temp_y = indexed[:-1], indexed[1:]
 note_y = temp_y[:, 0]
 vel_y = temp_y[:, 1]
@@ -154,8 +173,6 @@ def build_model(batch_size):
     y1 = keras.layers.BatchNormalization()(y1)
     # y_or1 = keras.layers.Dropout(0.4)(y_or1)
 
-    # y_1, y_2 = y1, y1
-
     y_1 = keras.layers.GRU(128, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y1)
     y_1 = keras.layers.Dropout(0.3)(y_1)
 
@@ -169,11 +186,6 @@ def build_model(batch_size):
 
     m = keras.Model(inputs=inputs, outputs=[y_1, y_2, y_3, y_4])
     return m
-
-
-def loss(labels, logits):
-    return tf.keras.losses.sparse_categorical_crossentropy(labels, logits, from_logits=True)
-
 
 def remove_checkpoints():
     dir_path = os.path.join(os.getcwd(), 'checkpoints')
@@ -254,8 +266,12 @@ def train(epochs=10, cont=False, lr=0.001, checkpoint=tf.train.latest_checkpoint
     return model
 
 
+"""
+Generating a sequence of notes by taking starting notes
+and passing the result back into the model
+"""
 def generate_text(m, start_string, num, temperature):
-    input_eval = np.array([[to_index(x) for x in start_string]])
+    input_eval = np.array([[to_index(x) for x in start_string]]) # Formatting the start string
     input_eval = tf.expand_dims(input_eval, 0)
 
     text_generated = []
@@ -304,6 +320,7 @@ def save_whole_model(directory, checkpoint=tf.train.latest_checkpoint(checkpoint
     model = build_model(1)
     model.load_weights(checkpoint).expect_partial()
     model.save(directory)
+
 
 
 if __name__ == "__main__":

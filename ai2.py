@@ -8,12 +8,10 @@ import numpy as np
 import shutil
 from math import log
 import pickle
-import midi_stuff
 import random
 import threading
 import queue
 import preprocess
-
 
 try:
     physical_devices = tf.config.list_physical_devices('GPU')
@@ -36,6 +34,66 @@ def decode(arr):
 
 def split_input(chunk):
     return chunk[:-1], chunk[1:]
+
+def load_raw_data():
+    data = []
+    directory = os.fsencode("data")
+
+    for file in os.listdir(directory):
+        file_name = os.fsdecode(file)
+        if file_name[-3:] == "npy":
+            with(open(os.path.join("data", file_name), "rb")) as f:
+                data.append(np.load(f))
+    return data
+
+def pad(d):
+    pad_length = seq_length*BATCH_SIZE - (d.shape[0] % (seq_length*BATCH_SIZE))
+    d = np.concatenate((d, np.tile([[0, 0, 0, 0]], (pad_length, 1))))
+    return d
+
+def padded_data():
+    data = load_raw_data()
+    data = np.array(list(map(pad, data)))
+    data = np.vstack(data)
+    return data
+
+def straight_data():
+    return np.vstack(load_raw_data())
+
+seq_length = 10
+BATCH_SIZE = 50
+repeats = 3
+
+data = padded_data()
+
+notes = sorted(set(data[:, 0]))
+vels = sorted(set(data[:, 1]))
+times = sorted(set(data[:, 2]))
+lengths = sorted(set(data[:, 3]))
+note2idx = {i: k for k, i in enumerate(notes)}
+idx2note = np.array(notes)
+vel2idx = {i: k for k, i in enumerate(vels)}
+idx2vel = np.array(vels)
+time2idx = {i: k for k, i in enumerate(times)}
+idx2time = np.array(times)
+length2idx = {i: k for k, i in enumerate(lengths)}
+idx2length = np.array(lengths)
+
+indexed = np.array(list(map(lambda x: to_index(x), data)))
+
+X, temp_y = indexed[:-1], indexed[1:]
+note_y = temp_y[:, 0]
+vel_y = temp_y[:, 1]
+time_y = temp_y[:, 2]
+length_y = temp_y[:, 3]
+data = tf.data.Dataset.from_tensor_slices((X, {"note": note_y, "vel": vel_y, "time": time_y, "length": length_y}))
+# print(len(notes), len(vels), len(times), len(lengths))
+
+data = data.repeat(repeats).batch(seq_length, drop_remainder=True)
+train_data = data.skip(BATCH_SIZE*2).batch(BATCH_SIZE, drop_remainder=True)
+test_data = data.take(BATCH_SIZE*2).batch(BATCH_SIZE, drop_remainder=True)
+
+embed_dim = 30
 
 
 def load_file(directory, file_name):
@@ -242,3 +300,4 @@ if __name__ == "__main__":
     train(3, cont=False)
     generated = guess(10)
     print(np.array(generated))
+

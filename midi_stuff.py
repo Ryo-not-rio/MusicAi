@@ -1,3 +1,6 @@
+"""
+Handling all the processing of the midi files
+"""
 import mido
 import os
 import ast
@@ -26,7 +29,7 @@ def make_midi_file(unconverted_notes, file="new.mid"):
             "control_change channel=0 control=10 value=64 time=0",
             "control_change channel=0 control=91 value=0 time=0",
             "control_change channel=0 control=93 value=0 time=0",
-            "<meta message midi_port port=0 time=0>"]
+            "<meta message midi_port port=0 time=0>"] # Meta messages at the beginning
     # new_track.append(mido.MetaMessage('time_signature', numerator=4, denominator=4, clocks_per_click=24,
     #                                   notated_32nd_notes_per_beat=8, time=0))
     # new_track.append(mido.MetaMessage('key_signature', key='C', time=0))
@@ -45,12 +48,15 @@ def make_midi_file(unconverted_notes, file="new.mid"):
     print("successfully saved midi file")
 
 
+
+# Unformatting each note to the format [note, velocity, time]
 def unconvert(notes):
     i = 0
     while i < len(notes):
         data = notes[i]
         note, vel, time = data[0], data[1], data[2]
         data[2] = round(time * BASE_TICKS_PER_BEAT)
+
         if vel != 0:
             length = data[3]
             insert_ind = i+1
@@ -169,7 +175,6 @@ def unconvert_matrix(sequence_list):
                 count += 1
 
         time += 1
-
     return notes
 
 
