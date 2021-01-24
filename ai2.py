@@ -8,6 +8,12 @@ import numpy as np
 import shutil
 from math import log
 import pickle
+import midi_stuff
+import random
+import threading
+import queue
+import preprocess
+
 
 try:
     physical_devices = tf.config.list_physical_devices('GPU')
@@ -18,88 +24,115 @@ except:
     print("No GPU")
 
 
+vectorized_func = np.vectorize(lambda x: note2idx[x])
 def to_index(arr):
-    return np.array([note2idx[x.encode()] for x in arr])
+    return vectorized_func(arr)
 
 
+vec_decode = np.vectorize(lambda x: idx2note[int(x)])
 def decode(arr):
-    return np.array([idx2note[int(x)].decode() for x in arr])
+    return vec_decode(arr)
 
 
 def split_input(chunk):
     return chunk[:-1], chunk[1:]
 
 
-def load_raw_data():
-    directory = os.fsencode("data2")
+def load_file(directory, file_name):
+    directory = os.fsdecode(directory)
+    if "vectorized" in file_name:
+        with(open(os.path.join(directory, file_name), "rb")) as f:
+            arr = np.load(f, allow_pickle=True)
 
-    for file in os.listdir(directory):
+            return arr
+    try:
+        with(open(os.path.join(directory, file_name[:-4]+"_vectorized.npy"), "rb")) as f:
+            return np.load(f, allow_pickle=True)
+    except FileNotFoundError:
         data = []
-        file_name = os.fsdecode(file)
-        if file_name[-3:] == "npy":
-            data.append(["-1"]*127)
-            with(open(os.path.join(os.fsdecode(directory), file_name), "rb")) as f:
-                data.append(np.load(f))
+        data.append([-1] * 127)
+        with(open(os.path.join(directory, file_name), "rb")) as f:
+            data.append(np.load(f))
 
         arr = np.vstack(np.array(data))
-        arr = np.array(list(map(to_index, arr)))
-        for i in range(arr.shape[0]-1):
-            yield arr[i], arr[i+1]
+        arr = to_index(arr)
+
+        os.remove(os.path.join(directory, file_name))
+        with(open(os.path.join(directory, file_name[:-4]+"_vectorized.npy"), "wb")) as f:
+            np.save(f, arr)
+        return arr
 
 
-def get_vocab(file_name, new_data=False):
+def load_raw_data():
+    directory = os.fsencode("data2")
+    files_list = os.listdir(directory)
+    random.shuffle(files_list)
+    index = 0
+    que = queue.Queue()
+    thread_count = 0
+    while True:
+        file = files_list[index]
+        file_name = os.fsdecode(file)
+
+        if thread_count < 5:
+            t = threading.Thread(target=lambda q, d, f: q.put(load_file(d, f)), args=(que, directory, file_name))
+            t.start()
+            thread_count += 1
+            index += 1
+
+        try:
+            arr = que.get(block=False)
+            thread_count -= 1
+            yield arr[:-1], arr[1:]
+        except queue.Empty:
+            pass
+
+        if index == len(files_list):
+            index = 0
+
+
+def get_vocab(file_name):
     try:
         with open(file_name, "rb") as f:
-            vocab = pickle.load(f)
+            return pickle.load(f)
     except FileNotFoundError:
-        vocab = [b"-1"]
-        new_data = True
-
-    if new_data:
-        directory = os.fsencode("data2")
-        for file in os.listdir(directory):
-            file_name_temp = os.fsdecode(file)
-            if file_name_temp[-3:] == "npy":
-                with(open(os.path.join(os.fsdecode(directory), file_name_temp), "rb")) as f:
-                    for d in set(np.load(f).flatten()):
-                        if d not in vocab:
-                            vocab.append(d.encode())
-
-    with open(file_name, "wb") as f:
-        pickle.dump(vocab, f)
-
-    return vocab
+        preprocess.process()
+        with open(file_name, "rb") as f:
+            return pickle.load(f)
 
 
-seq_length = 100
-BATCH_SIZE = 4
+seq_length = 500
+BATCH_SIZE = 512
 
 vocab = get_vocab("matrix_vocab.pkl")
+print(vocab)
 
 note2idx = {i: k for k, i in enumerate(vocab)}
 idx2note = np.array(vocab)
 
-data = tf.data.Dataset.from_generator(load_raw_data, output_types=(tf.uint8, tf.uint8), output_shapes=(tf.TensorShape([127]),
-                                                                                                       tf.TensorShape([127])))
+data = tf.data.Dataset.from_generator(load_raw_data, output_types=(tf.uint8, tf.uint8), output_shapes=(tf.TensorShape([None, 127]),
+                                                                                                       tf.TensorShape([None, 127])))
 
-data = data.batch(seq_length, drop_remainder=True)
+data = data.unbatch()
+# data = data.batch(3*60*150*midi_stuff.BASE_TICKS_PER_BEAT).shuffle(10000, reshuffle_each_iteration=True).unbatch()
 
-train_data = data.skip(BATCH_SIZE * 50).batch(BATCH_SIZE, drop_remainder=True)
-test_data = data.take(BATCH_SIZE * 50).batch(BATCH_SIZE, drop_remainder=True)
+size = 50000
+data = data.batch(seq_length, drop_remainder=True).take(size).batch(BATCH_SIZE, drop_remainder=True)
+train_data = data.skip(10)
+test_data = data.take(10)
 
 
 
 def build_model(batch_size=BATCH_SIZE):
     inputs = keras.layers.Input(batch_shape=(batch_size, None, 127), batch_size=batch_size)
 
-    y = keras.layers.Dropout(0.1)(inputs)
-
-    y = keras.layers.GRU(512, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y)
-
+    y = keras.layers.GRU(512, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(inputs)
+    y = keras.layers.Dropout(0.3)(y)
     y = keras.layers.Dense(127*len(vocab))(y)
     y = keras.layers.Reshape((-1, 127, len(vocab)))(y)
 
     m = keras.Model(inputs=inputs, outputs=y)
+    m.summary()
     return m
 
 
@@ -162,7 +195,7 @@ def train(epochs=10, cont=False, lr=0.001, checkpoint=tf.train.latest_checkpoint
     model.fit(train_data,
               epochs=epochs + ini_epoch, initial_epoch=ini_epoch,
               callbacks=[get_scheduler(lr), checkpoint_call_back, loss_callback()],
-              verbose=2,
+              verbose=1,
               validation_data=test_data,
               validation_freq=3)
     return model
@@ -179,16 +212,12 @@ def generate_text(m, num, temperature):
         predictions = m(input_eval)
 
         predictions = tf.squeeze(predictions)
-        predictions = tf.map_fn(lambda x: tf.random.categorical(tf.expand_dims(x, 0), num_samples=1).numpy()[-1, 0], predictions).numpy()
+        predictions = tf.map_fn(lambda x: tf.random.categorical(tf.expand_dims(x, 0)/temperature, num_samples=1).numpy()[-1, 0], predictions).numpy()
 
         input_eval = tf.expand_dims([predictions], 0)
 
         add = decode(predictions).tolist()
         text_generated.append(add)
-        # if -1 not in add:
-        #     text_generated.append(add)
-        # else:
-        #     num += 1
 
     return text_generated
 

@@ -116,9 +116,8 @@ def convert_to_matrix(file):
     mult = BASE_TICKS_PER_BEAT/ticks_per_beat
 
     start = False
-    step_matrix = ["0"]*127
+    step_matrix = [0]*127
     show = []
-    prev_note = None
 
     for i, msg in enumerate(mido.merge_tracks(mid.tracks)):
         if msg.type[:4] == "note":
@@ -130,24 +129,15 @@ def convert_to_matrix(file):
 
             if time > 0 and start:
                 sequence.append(step_matrix[:])
-                step_matrix = ["0" if x[-1] == "0" else "1" for x in step_matrix]
+                step_matrix = [0 if x == 0 else 1 for x in step_matrix]
                 sequence += [step_matrix[:]]*(time-1)
 
-            if time == 0 and prev_note == note:
-                if vel != 0:
-                    step_matrix[note] += "2"
-                else:
-                    step_matrix[note] += "0"
-
+            if vel != 0:
+                step_matrix[note] = 2
             else:
-                if vel != 0:
-                    step_matrix[note] = "2"
-                else:
-                    step_matrix[note] = "0"
+                step_matrix[note] = 0
 
-            prev_note = note
-
-            start = True
+            if not start: start = True
 
     sequence.append(step_matrix)
 
@@ -156,7 +146,7 @@ def convert_to_matrix(file):
     with open(os.path.join("data2", os.path.split(file)[-1][:-3] + "npy"), 'wb') as f:
         np.save(f, sequence)
 
-    return np.array(sequence)
+    return set(sequence.flatten())
 
 
 def unconvert_matrix(sequence_list):
@@ -164,20 +154,19 @@ def unconvert_matrix(sequence_list):
     playing = [0]*127
     time = 0
     for matrix in sequence_list:
-        for i, value in enumerate(matrix):
+        for i, v in enumerate(matrix):
             count = 0
-            for v in value:
-                if v == "2":
-                    notes.append([i, 120, time])
-                    playing[i] += 1
-                    time = 0
-                    count += 1
+            if v == 2:
+                notes.append([i, 80, time])
+                playing[i] += 1
+                time = 0
+                count += 1
 
-                elif v == "0" and playing[i]:
-                    notes.append([i, 0, time])
-                    playing[i] -= 1
-                    time = 0
-                    count += 1
+            elif v == 0 and playing[i]:
+                notes.append([i, 0, time])
+                playing[i] -= 1
+                time = 0
+                count += 1
 
         time += 1
 
@@ -186,15 +175,20 @@ def unconvert_matrix(sequence_list):
 
 def convert_all(directory, convert_func):
     directory = os.fsencode(directory)
+    vocab = set()
     for file in os.listdir(directory):
         file_name = os.fsdecode(file)
-        convert_func(os.path.join(os.fsdecode(directory), file_name))
+        v = convert_func(os.path.join(os.fsdecode(directory), file_name))
+        if v is not None:
+            vocab = vocab.union(v)
 
-    print("Successfully converted all")
+    if vocab:
+        return vocab
 
 
 if __name__ == "__main__":
-    print(convert_all("midis", convert_to_matrix))
+    conved = convert_to_matrix("midis/DEB_PASS.mid")
+    make_midi_file(conved, "temp.mid")
 
 
 

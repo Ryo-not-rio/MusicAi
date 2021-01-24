@@ -1,6 +1,8 @@
 venv/
 checkpoints
 sUccesSFul_checkpoints
-models
 .idea
 _pycahce_
+data
+data2
+checkpoints2
