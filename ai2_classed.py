@@ -76,6 +76,8 @@ class MatrixAi(AiInterface):
         return np.array(sequence), vocabs
 
     def data_to_midi_sequence(self, sequence):
+        vec_decode = np.vectorize(lambda x: self.idx2note[int(x)])
+        sequence = vec_decode(np.array(sequence)).tolist()
         notes = []
         playing = [0] * 127
         time = 0
@@ -204,11 +206,9 @@ class MatrixAi(AiInterface):
         return np.array(sequence)
 
     def generate_text(self, model, num, start, temperature):
-        vec_decode = np.vectorize(lambda x: self.idx2note[int(x)])
-
         input_eval = self.parse_start(start)
 
-        text_generated = list(vec_decode(input_eval[1:]))
+        text_generated = list(input_eval[1:])
 
         input_eval = tf.expand_dims(input_eval, 0)
         model.reset_states()
@@ -221,10 +221,9 @@ class MatrixAi(AiInterface):
                           lambda x: tf.random.categorical(tf.expand_dims(x, 0) / temperature, num_samples=1).numpy()[-1, 0],
                           predictions).numpy()
 
-            print(predictions.shape)
             input_eval = tf.expand_dims([predictions], 0)
 
-            add = vec_decode(predictions).tolist()
+            add = predictions.tolist()
             text_generated.append(add)
 
         return text_generated
@@ -244,11 +243,11 @@ class MatrixAi(AiInterface):
 
 if __name__ == "__main__":
     ai = MatrixAi()
-    converted = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), ai.vocabs)[0]
-    notes = ai.data_to_midi_sequence(converted.tolist())
-    ai.make_midi_file(notes, "temp.mid")
+    # converted = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), ai.vocabs)[0]
+    # notes = ai.data_to_midi_sequence(converted.tolist())
+    # ai.make_midi_file(notes, "temp.mid")
 
-    # ai.train(1, cont=False)
-    # generated = ai.guess(num=10)
-    # print(np.array(generated))
+    notes = ai.guess(100)
+    notes = ai.data_to_midi_sequence(notes)
+    ai.make_midi_file(notes, "temp.mid")
 
