@@ -10,7 +10,6 @@ import threading
 import queue
 import mido
 
-import midi_stuff
 from AiInterface import AiInterface
 
 
@@ -32,20 +31,19 @@ def split_input(chunk):
 class MatrixAi(AiInterface):
     def __init__(self):
         super().__init__("./checkpoints2", "data2", "matrix_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
-        self.vocab = self.vocabs[0]
-        self.note2idx = {i: k for k, i in enumerate(self.vocab)}
-        self.idx2note = np.array(self.vocab)
 
     def midi_to_data(self, mid, vocabs) -> (np.array, list):
         if not vocabs:
-            vocabs = [[-1]]
+            vocabs = [["-1"]]
         vocab = vocabs[0]
-        sequence = [[vocab.index(-1)]*127]
+        sequence = [[vocab.index("-1")]*127]
         ticks_per_beat = mid.ticks_per_beat
         mult = self.ticks_per_beat / ticks_per_beat
 
         start = False
-        step_matrix = [0] * 127
+        step_matrix = ["0"] * 127
+        playing = [0] * 127
+        prev_note = None
         for i, msg in enumerate(mido.merge_tracks(mid.tracks)):
             if msg.type[:4] == "note":
                 note = msg.note
@@ -54,50 +52,84 @@ class MatrixAi(AiInterface):
 
                 if time > 0 and start:
                     add = []
-                    for x in step_matrix[:]:
-                        if x in vocab:
-                            add.append(vocab.index(x))
+                    for n, xs in enumerate(step_matrix[:]):
+                        if xs[0] == 3:
+                            last_note_value = vocab[sequence[-1][n]]
+                            last_note_value = last_note_value[:-1] + "3"
+                            if last_note_value not in vocab: vocab.append(last_note_value)
+                            sequence[-1][n] = vocab.index(last_note_value)
+                            if playing[n] > 0:
+                                xs = "1" + xs[1:]
+                            else:
+                                xs = "0" + xs[1:]
+
+                        if xs not in vocab:
+                            vocab.append(xs)
+                        add.append(vocab.index(xs))
+                    sequence.append(add[:])
+
+                    for j, value in enumerate(add):
+                        if vocab[value][-1] == "2":
+                            if "1" not in vocab: vocab.append("1")
+                            add[j] = vocab.index("1")
                         else:
-                            vocab.append(x)
-                            add.append(len(vocab)-1)
-                    sequence.append(add)
-                    step_matrix = [0 if x == 0 else 1 for x in step_matrix]
-                    sequence += [step_matrix[:]] * (time - 1)
+                            add[j] = value
+                    sequence += [add[:]] * (time - 1)
 
                 if vel != 0:
-                    step_matrix[note] = 2
+                    if time == 0 and prev_note == note:
+                        step_matrix[note] += "2"
+                    else:
+                        step_matrix[note] = "2"
+                    playing[note] += 1
                 else:
-                    step_matrix[note] = 0
+                    if playing[note] > 0:
+                        playing[note] -= 1
+
+                    if time == 0 and prev_note == note:
+                        step_matrix[note] += "3"
+                    else:
+                        step_matrix[note] = "3"
 
                 if not start: start = True
+                prev_note = note
 
         sequence.append(step_matrix)
 
         return np.array(sequence), vocabs
 
     def data_to_midi_sequence(self, sequence):
-        vec_decode = np.vectorize(lambda x: self.idx2note[int(x)])
+        idx2note = np.array(self.vocabs[0])
+        vec_decode = np.vectorize(lambda x: idx2note[int(x)])
         sequence = vec_decode(np.array(sequence)).tolist()
         notes = []
         playing = [0] * 127
         time = 0
         for matrix in sequence:
-            for i, v in enumerate(matrix):
+            for i, value in enumerate(matrix):
                 count = 0
-                if v == 2:
-                    notes.append([i, 80, time])
-                    playing[i] += 1
-                    time = 0
-                    count += 1
 
-                elif v == 0 and playing[i]:
-                    notes.append([i, 0, time])
-                    playing[i] -= 1
-                    time = 0
-                    count += 1
+                for v in value:
+                    if v == "2":
+                        notes.append([i, 80, time])
+                        playing[i] += 1
+                        time = 0
+                        count += 1
+
+                    elif v == "3":
+                        # if playing[i] > 0:
+                        playing[i] -= 1
+                        notes.append([i, 0, time])
+                        time = 0
+                        count += 1
 
             time += 1
 
+        # print(notes)
+        for note, value in enumerate(playing):
+            if value > 0:
+                notes.append([note, 0, 0])
+        # print(notes)
         return notes
 
     def get_dataset(self):
@@ -243,9 +275,16 @@ class MatrixAi(AiInterface):
 
 if __name__ == "__main__":
     ai = MatrixAi()
-    # converted = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), ai.vocabs)[0]
-    # notes = ai.data_to_midi_sequence(converted.tolist())
-    # ai.make_midi_file(notes, "temp.mid")
+    ai.process_all()
+
+    # converted, vocabs = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), [])
+    # ai.vocabs = vocabs
+    # # print(converted.shape)
+    # noted = ai.data_to_midi_sequence(converted.tolist())
+    # # print(noted)
+    # ai.make_midi_file(noted, "temp.mid")
+
+    ai.train(1)
 
     notes = ai.guess(100)
     notes = ai.data_to_midi_sequence(notes)
