@@ -5,15 +5,12 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import tensorflow as tf
 from tensorflow import keras
 import numpy as np
-import shutil
-from math import log
-import pickle
 import random
 import threading
 import queue
 import mido
 
-import preprocess
+import midi_stuff
 from AiInterface import AiInterface
 
 
@@ -27,14 +24,14 @@ except:
 
 SEQ_LENGTH = 100
 BATCH_SIZE = 64
-BASE_TICKS_PER_BEAT = 256
+TICKS_PER_BEAT = 256
 
 def split_input(chunk):
     return chunk[:-1], chunk[1:]
 
 class MatrixAi(AiInterface):
     def __init__(self):
-        super().__init__("./checkpoints2", "data2", "matrix_vocab.pkl", BATCH_SIZE)
+        super().__init__("./checkpoints2", "data2", "matrix_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
         self.vocab = self.vocabs[0]
         self.note2idx = {i: k for k, i in enumerate(self.vocab)}
         self.idx2note = np.array(self.vocab)
@@ -45,7 +42,7 @@ class MatrixAi(AiInterface):
         vocab = vocabs[0]
         sequence = [[vocab.index(-1)]*127]
         ticks_per_beat = mid.ticks_per_beat
-        mult = BASE_TICKS_PER_BEAT / ticks_per_beat
+        mult = self.ticks_per_beat / ticks_per_beat
 
         start = False
         step_matrix = [0] * 127
@@ -247,8 +244,11 @@ class MatrixAi(AiInterface):
 
 if __name__ == "__main__":
     ai = MatrixAi()
-    # ai.process_all()
+    converted = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), ai.vocabs)[0]
+    notes = ai.data_to_midi_sequence(converted.tolist())
+    ai.make_midi_file(notes, "temp.mid")
+
     # ai.train(1, cont=False)
-    generated = ai.guess(num=10)
-    print(np.array(generated))
+    # generated = ai.guess(num=10)
+    # print(np.array(generated))
 

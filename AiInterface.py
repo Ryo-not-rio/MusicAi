@@ -20,10 +20,11 @@ class AiInterface:
         except OSError as e:
             print("Error: %s : %s" % (dir, e.strerror))
 
-    def __init__(self, check_dir: str, data_dir: str, vocab_file: str, batch_size:int) -> None:
+    def __init__(self, check_dir: str, data_dir: str, vocab_file: str, batch_size: int, ticks_per_beat: int) -> None:
         self.check_dir = check_dir
         self.data_dir = data_dir
         self.batch_size = batch_size
+        self.ticks_per_beat = ticks_per_beat
         self.loss = -1
         self.prev_loss = 100
         self.vocab_file = vocab_file
@@ -32,6 +33,23 @@ class AiInterface:
                 self.vocabs = pickle.load(f)
         except FileNotFoundError:
             self.process_all() # Sets self.vocabs
+
+    def make_midi_file(self, notes, file="new.mid"):
+        new_mid = mido.MidiFile()
+        new_mid.ticks_per_beat = self.ticks_per_beat
+        new_track = mido.MidiTrack()
+        new_mid.tracks.append(new_track)
+
+        for n in notes:
+            try:
+                new_track.append(mido.Message('note_on', note=n[0], velocity=n[1], time=n[2]))
+            except ValueError as e:
+                print(e, " for ", n)
+
+        new_track.append(mido.MetaMessage('end_of_track', time=1))
+
+        new_mid.save(file)
+        print("successfully saved midi file")
 
     def loss_callback(self):
         return self.LossCallback(self)
@@ -75,6 +93,8 @@ class AiInterface:
 
     def process_all(self, midi_dir: str = "midis") -> list:
         print("Processing midis...")
+        shutil.rmtree(self.data_dir)
+        os.mkdir(self.data_dir)
         try:
             with open(self.vocab_file, "rb") as f:
                 vocabs = pickle.load(f)

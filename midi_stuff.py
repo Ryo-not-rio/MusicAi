@@ -6,34 +6,11 @@ import os
 import ast
 import numpy as np
 
-BASE_TICKS_PER_BEAT = 256
-
-def make_midi_file(unconverted_notes, file="new.mid"):
-    if len(unconverted_notes[0]) == 4:
-        unconvert_func = unconvert
-    elif len(unconverted_notes[0]) == 127:
-        unconvert_func = unconvert_matrix
-    else:
-        raise Exception("conversion protocol not recognised")
-
-    notes = unconvert_func(unconverted_notes)
+def make_midi_file(notes, ticks_per_beat, file="new.mid"):
     new_mid = mido.MidiFile()
-    new_mid.ticks_per_beat = BASE_TICKS_PER_BEAT
+    new_mid.ticks_per_beat = ticks_per_beat
     new_track = mido.MidiTrack()
     new_mid.tracks.append(new_track)
-
-
-    data = ["control_change channel=0 control=121 value=0 time=0",
-            "program_change channel=0 program=0 time=0",
-            "control_change channel=0 control=7 value=100 time=0",
-            "control_change channel=0 control=10 value=64 time=0",
-            "control_change channel=0 control=91 value=0 time=0",
-            "control_change channel=0 control=93 value=0 time=0",
-            "<meta message midi_port port=0 time=0>"] # Meta messages at the beginning
-    # new_track.append(mido.MetaMessage('time_signature', numerator=4, denominator=4, clocks_per_click=24,
-    #                                   notated_32nd_notes_per_beat=8, time=0))
-    # new_track.append(mido.MetaMessage('key_signature', key='C', time=0))
-    # new_track.append(mido.MetaMessage('set_tempo', tempo=500000, time=0))
 
     for n in notes:
         try:
@@ -114,68 +91,7 @@ def convert(file):
     with open(os.path.join("data", os.path.split(file)[-1][:-3]+"npy"), 'wb') as f:
         np.save(f, data)
 
-
-def convert_to_matrix(file):
-    sequence = []
-    mid = mido.MidiFile(file)
-    ticks_per_beat = mid.ticks_per_beat
-    mult = BASE_TICKS_PER_BEAT/ticks_per_beat
-
-    start = False
-    step_matrix = [0]*127
-    show = []
-
-    for i, msg in enumerate(mido.merge_tracks(mid.tracks)):
-        if msg.type[:4] == "note":
-            note = msg.note
-            vel = msg.velocity
-            time = round(msg.time * mult)
-
-            show.append([note, vel, time])
-
-            if time > 0 and start:
-                sequence.append(step_matrix[:])
-                step_matrix = [0 if x == 0 else 1 for x in step_matrix]
-                sequence += [step_matrix[:]]*(time-1)
-
-            if vel != 0:
-                step_matrix[note] = 2
-            else:
-                step_matrix[note] = 0
-
-            if not start: start = True
-
-    sequence.append(step_matrix)
-
-    sequence = np.array(sequence)
-
-    with open(os.path.join("data2", os.path.split(file)[-1][:-3] + "npy"), 'wb') as f:
-        np.save(f, sequence)
-
-    return set(sequence.flatten())
-
-
-def unconvert_matrix(sequence_list):
-    notes = []
-    playing = [0]*127
-    time = 0
-    for matrix in sequence_list:
-        for i, v in enumerate(matrix):
-            count = 0
-            if v == 2:
-                notes.append([i, 80, time])
-                playing[i] += 1
-                time = 0
-                count += 1
-
-            elif v == 0 and playing[i]:
-                notes.append([i, 0, time])
-                playing[i] -= 1
-                time = 0
-                count += 1
-
-        time += 1
-    return notes
+    return data
 
 
 def convert_all(directory, convert_func):

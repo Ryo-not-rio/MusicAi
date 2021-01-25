@@ -63,11 +63,6 @@ def pad(d):
 
     return d
 
-
-def cut(d):
-    length = d.shape[0] * (d.shape[0] // (seq_length * BATCH_SIZE))
-    return d[:length]
-
 """
 Get data from data folder, process it using the passed function,
 concatenate the result.
@@ -103,7 +98,7 @@ def get_vocab(file_name, data):
 seq_length = 100
 BATCH_SIZE = 4
 
-data = process_data(cut)
+data = process_data(pad)
 
 notes = get_vocab("notes.pkl", data[:, 0])
 vels = get_vocab("vels.pkl", data[:, 1])
