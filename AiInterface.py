@@ -34,6 +34,9 @@ class AiInterface:
         except FileNotFoundError:
             self.process_all() # Sets self.vocabs
 
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
+
     def make_midi_file(self, notes, file="new.mid"):
         new_mid = mido.MidiFile()
         new_mid.ticks_per_beat = self.ticks_per_beat
