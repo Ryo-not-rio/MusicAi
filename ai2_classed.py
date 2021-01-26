@@ -25,9 +25,15 @@ try:
 except:
     print("No GPU")
 
-SEQ_LENGTH = 100
-BATCH_SIZE = 512
-TICKS_PER_BEAT = 256
+# BATCH_SIZE = 128
+# TICKS_PER_BEAT = 128
+# SEQ_LENGTH = TICKS_PER_BEAT*4*2
+
+#### TO BE ABLE TO RUN ON PERSONAL COMPUTER ###
+BATCH_SIZE = 10
+TICKS_PER_BEAT = 128
+SEQ_LENGTH = 10
+#######################################
 
 def split_input(chunk):
     return chunk[:-1], chunk[1:]
@@ -101,21 +107,17 @@ class MatrixAi(AiInterface):
         time = 0
         for matrix in sequence:
             for i, value in enumerate(matrix):
-                count = 0
-
                 for v in value:
                     if v == "2":
                         notes.append([i, 80, time])
                         playing[i] += 1
                         time = 0
-                        count += 1
 
                     elif v == "3":
                         # if playing[i] > 0:
                         playing[i] -= 1
                         notes.append([i, 0, time])
                         time = 0
-                        count += 1
 
             time += 1
 
@@ -189,8 +191,7 @@ class MatrixAi(AiInterface):
     def build_model(self, batch_size):
         inputs = keras.layers.Input(batch_shape=(batch_size, None, 127), batch_size=batch_size)
 
-        y = keras.layers.GRU(512, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(inputs)
-        # y = keras.layers.GRU(128, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y)
+        y = keras.layers.GRU(256, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(inputs)
         y = keras.layers.Dropout(0.3)(y)
         y = keras.layers.Dense(127 * len(self.vocabs[0]))(y)
         y = keras.layers.Reshape((-1, 127, len(self.vocabs[0])))(y)
@@ -212,7 +213,7 @@ class MatrixAi(AiInterface):
         if cont:
             latest = self.get_checkpoint(checkpoint_num)
             if latest is not None:
-                ini_epoch = int(latest[17:])
+                ini_epoch = int(latest[20:])
                 model.load_weights(latest)
         else:
             AiInterface.remove_checkpoints(self.check_dir)
@@ -229,7 +230,7 @@ class MatrixAi(AiInterface):
                   verbose=1,
                   validation_data=test_data,
                   validation_freq=3,
-                  steps_per_epoch=int(50000/BATCH_SIZE))
+                  steps_per_epoch=int(40000/BATCH_SIZE))
         return model
 
     def parse_start(self, start_seq: list) -> np.array:
@@ -276,25 +277,53 @@ class MatrixAi(AiInterface):
             if not start: start = True
             prev_note = note
 
-        return np.array(sequence)
+        return np.array(sequence), playing
 
     def generate_text(self, model, num, start, temperature):
         print("generating...")
-        input_eval = self.parse_start(start)
+        input_eval, playing = self.parse_start(start)
 
         text_generated = list(input_eval[1:])
 
         input_eval = tf.expand_dims(input_eval, 0)
         model.reset_states()
 
-        playing = [0]*127
-
         vocab = self.vocabs[0]
         note2idx = {k: i for i, k in enumerate(vocab)}
         counts2 = [x.count("2") for x in vocab]
         counts3 = [x.count("3") for x in vocab]
+
+        def parse_func(playing_note, v):
+            v = int(v)
+            value = vocab[v]
+            playing_note += counts2[v]
+            playing_note -= counts3[v]
+            if playing_note > 0 and value[-1] == "0":
+                new_value = value[:-1] + "1"
+                while new_value not in note2idx:
+                    if new_value[0] == "2":
+                        playing_note -= 1
+                    elif new_value[0] == "3":
+                        playing_note += 1
+                    new_value = new_value[1:]
+                v = note2idx[new_value]
+            elif playing_note <= 0 and value[-1] == "1":
+                new_value = value[:-1] + "0"
+                while new_value not in note2idx:
+                    if new_value[0] == "2":
+                        playing_note -= 1
+                    elif new_value[0] == "3":
+                        playing_note += 1
+                    new_value = new_value[1:]
+                v = note2idx[new_value]
+
+            if playing_note < 0: playing_note = 0
+            return playing_note, v
+
+        vec_parse_func = np.vectorize(parse_func)
+
         for i in range(num):
-            if i%150 == 0:
+            if i % 150 == 0:
                 print(f"Generating {i}/{num}")
             predictions = model.predict(input_eval)
             predictions = tf.squeeze(predictions, 0)
@@ -303,20 +332,7 @@ class MatrixAi(AiInterface):
                           lambda x: tf.random.categorical(tf.expand_dims(x, 0) / temperature, num_samples=1).numpy()[-1, 0],
                           predictions).numpy()
 
-            for note, v in enumerate(predictions):
-                value = vocab[int(v)]
-                playing[note] += counts2[int(v)]
-                playing[note] -= counts3[int(v)]
-                if playing[note] > 0 and value[-1] == "0":
-                    new_value = value[:-1] + "1"
-                    while new_value not in note2idx:
-                        new_value = new_value[1:]
-                    predictions[note] = note2idx[new_value]
-                elif playing[note] <= 0 and value[-1] == "1":
-                    new_value = value[:-1] + "0"
-                    while new_value not in note2idx:
-                        new_value = new_value[1:]
-                    predictions[note] = note2idx[new_value]
+            playing, predictions = vec_parse_func(playing, predictions)
 
             input_eval = tf.expand_dims([predictions], 0)
 
@@ -340,7 +356,7 @@ class MatrixAi(AiInterface):
 
 if __name__ == "__main__":
     ai = MatrixAi()
-    ai.process_all()
+    # ai.process_all()
 
     # converted, vocabs = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), [])
     # ai.vocabs = vocabs
@@ -351,7 +367,7 @@ if __name__ == "__main__":
 
     # ai.train(1)
 
-    notes = ai.guess(100)
+    notes = ai.guess(300)
     notes = ai.data_to_midi_sequence(notes)
     ai.make_midi_file(notes, "temp.mid")
 
