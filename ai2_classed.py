@@ -56,16 +56,6 @@ class MatrixAi(AiInterface):
                 if time > 0 and start:
                     add = []
                     for n, xs in enumerate(step_matrix[:]):
-                        if xs[0] == 3:
-                            last_note_value = vocab[sequence[-1][n]]
-                            last_note_value = last_note_value[:-1] + "3"
-                            if last_note_value not in vocab: vocab.append(last_note_value)
-                            sequence[-1][n] = vocab.index(last_note_value)
-                            if playing[n] > 0:
-                                xs = "1" + xs[1:]
-                            else:
-                                xs = "0" + xs[1:]
-
                         if xs not in vocab:
                             vocab.append(xs)
                         add.append(vocab.index(xs))
@@ -97,7 +87,7 @@ class MatrixAi(AiInterface):
                 if not start: start = True
                 prev_note = note
 
-        sequence.append(step_matrix)
+        sequence.append([vocab.index(x) for x in step_matrix[:]])
 
         return np.array(sequence), vocabs
 
@@ -144,7 +134,7 @@ class MatrixAi(AiInterface):
         except FileNotFoundError:
             vocabs = []
 
-        for file in os.listdir(midi_dir)[:1]:
+        for file in os.listdir(midi_dir):
             mid = mido.MidiFile(os.path.join(midi_dir, file))
             data, vocabs = self.midi_to_data(mid, vocabs)
 
@@ -161,9 +151,13 @@ class MatrixAi(AiInterface):
 
     def get_dataset(self):
         def load_file(file):
-            with(open(os.path.join(self.data_dir, file), "rb")) as f:
-                arr = np.load(f)['arr_0']
-                return arr
+            f = np.load(os.path.join(self.data_dir, file))
+            arr = f['arr_0']
+            f.close()
+            print(arr)
+            if np.isnan(np.sum(arr.flatten())):
+                print("!NAN DATA")
+            return arr
 
         def load_raw_data():
             files_list = os.listdir(self.data_dir)
@@ -175,7 +169,7 @@ class MatrixAi(AiInterface):
                 file = files_list[index]
                 file_name = os.fsdecode(file)
 
-                if thread_count < 5:
+                if thread_count < 3:
                     t = threading.Thread(target=lambda q, f: q.put(load_file(f)),
                                          args=(que, file_name))
                     t.start()
@@ -205,7 +199,7 @@ class MatrixAi(AiInterface):
         y = keras.layers.Reshape((-1, 127, len(self.vocabs[0])))(y)
 
         m = keras.Model(inputs=inputs, outputs=y)
-        # m.summary()
+        m.summary()
         return m
 
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
@@ -214,7 +208,7 @@ class MatrixAi(AiInterface):
         train_data = data.skip(10 * BATCH_SIZE).repeat()
         # train_data = train_data.batch(150*midi_stuff.BASE_TICKS_PER_BEAT).shuffle(10, reshuffle_each_iteration=True).unbatch()
         train_data = train_data.batch(BATCH_SIZE, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
-        test_data = data.take(10 * BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True)
+        test_data = data.take(10 * BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True).prefetch(1)
 
         model = self.build_model(BATCH_SIZE)
 
@@ -239,7 +233,7 @@ class MatrixAi(AiInterface):
                   verbose=1,
                   validation_data=test_data,
                   validation_freq=3,
-                  steps_per_epoch=10)
+                  steps_per_epoch=int(15000/BATCH_SIZE))
         return model
 
     def parse_start(self, start_seq: list) -> np.array:
@@ -256,15 +250,6 @@ class MatrixAi(AiInterface):
             if time > 0 and start:
                 add = []
                 for n, xs in enumerate(step_matrix[:]):
-                    if xs[0] == 3:
-                        last_note_value = vocab[sequence[-1][n]]
-                        last_note_value = last_note_value[:-1] + "3"
-                        sequence[-1][n] = vocab.index(last_note_value)
-                        if playing[n] > 0:
-                            xs = "1" + xs[1:]
-                        else:
-                            xs = "0" + xs[1:]
-
                     if xs not in vocab:
                         vocab.append(xs)
                     add.append(vocab.index(xs))
@@ -321,12 +306,14 @@ class MatrixAi(AiInterface):
                 playing[note] -= value.count("3")
                 if playing[note] > 0 and value[-1] == "0":
                     new_value = value[:-1] + "1"
-                    if new_value in vocab:
-                        predictions[note] = vocab.index(new_value)
+                    while new_value not in vocab:
+                        new_value = new_value[1:]
+                    predictions[note] = vocab.index(new_value)
                 elif playing[note] <= 0 and value[-1] == "1":
                     new_value = value[:-1] + "0"
-                    if new_value in vocab:
-                        predictions[note] = vocab.index(new_value)
+                    while new_value not in vocab:
+                        new_value = new_value[1:]
+                    predictions[note] = vocab.index(new_value)
 
 
             input_eval = tf.expand_dims([predictions], 0)
@@ -351,18 +338,18 @@ class MatrixAi(AiInterface):
 
 if __name__ == "__main__":
     ai = MatrixAi()
-    ai.process_all()
+    # ai.process_all()
 
-    # converted, vocabs = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), [])
-    # ai.vocabs = vocabs
-    # # print(converted.shape)
-    # noted = ai.data_to_midi_sequence(converted.tolist())
-    # # print(noted)
-    # ai.make_midi_file(noted, "temp.mid")
+    converted, vocabs = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), [])
+    ai.vocabs = vocabs
+    # print(converted.shape)
+    noted = ai.data_to_midi_sequence(converted.tolist())
+    # print(noted)
+    ai.make_midi_file(noted, "temp.mid")
 
     # ai.train(1)
 
-    notes = ai.guess(100)
-    notes = ai.data_to_midi_sequence(notes)
-    ai.make_midi_file(notes, "temp.mid")
+    # notes = ai.guess(100)
+    # notes = ai.data_to_midi_sequence(notes)
+    # ai.make_midi_file(notes, "temp.mid")
 
