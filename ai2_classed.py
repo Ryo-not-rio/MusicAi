@@ -351,7 +351,7 @@ class MatrixAi(AiInterface):
 
 if __name__ == "__main__":
     ai = MatrixAi()
-    # ai.process_all()
+    ai.process_all()
 
     # converted, vocabs = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), [])
     # ai.vocabs = vocabs
