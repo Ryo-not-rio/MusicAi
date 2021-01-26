@@ -9,6 +9,9 @@ import random
 import threading
 import queue
 import mido
+import shutil
+import time
+import pickle
 
 from AiInterface import AiInterface
 
@@ -30,7 +33,7 @@ def split_input(chunk):
 
 class MatrixAi(AiInterface):
     def __init__(self):
-        super().__init__("./checkpoints2", "data2", "matrix_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
+        super().__init__("./checkpoints2", "data2", "ai2_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
 
     def midi_to_data(self, mid, vocabs) -> (np.array, list):
         if not vocabs:
@@ -125,17 +128,41 @@ class MatrixAi(AiInterface):
 
             time += 1
 
-        # print(notes)
         for note, value in enumerate(playing):
             if value > 0:
                 notes.append([note, 0, 0])
-        # print(notes)
         return notes
+
+    def process_all(self, midi_dir: str = "midis") -> list:
+        print("Processing midis...")
+        start = time.time()
+        shutil.rmtree(self.data_dir)
+        os.mkdir(self.data_dir)
+        try:
+            with open(self.vocab_file, "rb") as f:
+                vocabs = pickle.load(f)
+        except FileNotFoundError:
+            vocabs = []
+
+        for file in os.listdir(midi_dir)[:1]:
+            mid = mido.MidiFile(os.path.join(midi_dir, file))
+            data, vocabs = self.midi_to_data(mid, vocabs)
+
+            with open(os.path.join(self.data_dir, os.path.split(file)[-1][:-3] + "npz"), "wb") as f:
+                np.savez_compressed(f, data)
+
+        with open(self.vocab_file, "wb") as f:
+            pickle.dump(vocabs, f)
+
+        self.vocabs = vocabs
+        print("processed all midi files.")
+        print("time_taken: ", time.time()-start)
+        return vocabs
 
     def get_dataset(self):
         def load_file(file):
             with(open(os.path.join(self.data_dir, file), "rb")) as f:
-                arr = np.load(f, allow_pickle=True)
+                arr = np.load(f)['arr_0']
                 return arr
 
         def load_raw_data():
@@ -174,11 +201,11 @@ class MatrixAi(AiInterface):
 
         y = keras.layers.GRU(512, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(inputs)
         y = keras.layers.Dropout(0.3)(y)
-        y = keras.layers.Dense(127 * len(self.vocab))(y)
-        y = keras.layers.Reshape((-1, 127, len(self.vocab)))(y)
+        y = keras.layers.Dense(127 * len(self.vocabs[0]))(y)
+        y = keras.layers.Reshape((-1, 127, len(self.vocabs[0])))(y)
 
         m = keras.Model(inputs=inputs, outputs=y)
-        m.summary()
+        # m.summary()
         return m
 
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
@@ -216,35 +243,70 @@ class MatrixAi(AiInterface):
         return model
 
     def parse_start(self, start_seq: list) -> np.array:
-        sequence = [[-1] * 127]
+        vocab = self.vocabs[0]
+        sequence = [[vocab.index("-1")] * 127]
 
         start = False
-        step_matrix = [0] * 127
+        step_matrix = ["0"] * 127
+        playing = [0] * 127
+        prev_note = None
         for i, v in enumerate(start_seq):
             note, vel, time = v
 
             if time > 0 and start:
-                sequence.append([self.note2idx[x] for x in step_matrix[:]])
-                step_matrix = [0 if x == 0 else 1 for x in step_matrix]
-                sequence += [step_matrix[:]] * (time - 1)
+                add = []
+                for n, xs in enumerate(step_matrix[:]):
+                    if xs[0] == 3:
+                        last_note_value = vocab[sequence[-1][n]]
+                        last_note_value = last_note_value[:-1] + "3"
+                        sequence[-1][n] = vocab.index(last_note_value)
+                        if playing[n] > 0:
+                            xs = "1" + xs[1:]
+                        else:
+                            xs = "0" + xs[1:]
+
+                    if xs not in vocab:
+                        vocab.append(xs)
+                    add.append(vocab.index(xs))
+                sequence.append(add[:])
+
+                for j, value in enumerate(add):
+                    if vocab[value][-1] == "2":
+                        add[j] = vocab.index("1")
+                    else:
+                        add[j] = value
+                sequence += [add[:]] * (time - 1)
 
             if vel != 0:
-                step_matrix[note] = 2
+                if time == 0 and prev_note == note:
+                    step_matrix[note] += "2"
+                else:
+                    step_matrix[note] = "2"
+                playing[note] += 1
             else:
-                step_matrix[note] = 0
+                if playing[note] > 0:
+                    playing[note] -= 1
+
+                if time == 0 and prev_note == note:
+                    step_matrix[note] += "3"
+                else:
+                    step_matrix[note] = "3"
 
             if not start: start = True
+            prev_note = note
 
         return np.array(sequence)
 
     def generate_text(self, model, num, start, temperature):
         input_eval = self.parse_start(start)
 
+        vocab = self.vocabs[0]
         text_generated = list(input_eval[1:])
 
         input_eval = tf.expand_dims(input_eval, 0)
         model.reset_states()
 
+        playing = [0]*127
         for i in range(num):
             predictions = model.predict(input_eval)
             predictions = tf.squeeze(predictions, 0)
@@ -252,6 +314,20 @@ class MatrixAi(AiInterface):
             predictions = tf.map_fn(
                           lambda x: tf.random.categorical(tf.expand_dims(x, 0) / temperature, num_samples=1).numpy()[-1, 0],
                           predictions).numpy()
+
+            for note, v in enumerate(predictions):
+                value = vocab[int(v)]
+                playing[note] += value.count("2")
+                playing[note] -= value.count("3")
+                if playing[note] > 0 and value[-1] == "0":
+                    new_value = value[:-1] + "1"
+                    if new_value in vocab:
+                        predictions[note] = vocab.index(new_value)
+                elif playing[note] <= 0 and value[-1] == "1":
+                    new_value = value[:-1] + "0"
+                    if new_value in vocab:
+                        predictions[note] = vocab.index(new_value)
+
 
             input_eval = tf.expand_dims([predictions], 0)
 
@@ -275,7 +351,7 @@ class MatrixAi(AiInterface):
 
 if __name__ == "__main__":
     ai = MatrixAi()
-    ai.process_all()
+    # ai.process_all()
 
     # converted, vocabs = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), [])
     # ai.vocabs = vocabs
@@ -284,7 +360,7 @@ if __name__ == "__main__":
     # # print(noted)
     # ai.make_midi_file(noted, "temp.mid")
 
-    ai.train(1)
+    # ai.train(1)
 
     notes = ai.guess(100)
     notes = ai.data_to_midi_sequence(notes)
