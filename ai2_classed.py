@@ -12,6 +12,7 @@ import mido
 import shutil
 import time
 import pickle
+import random
 
 from AiInterface import AiInterface
 
@@ -25,7 +26,7 @@ except:
     print("No GPU")
 
 SEQ_LENGTH = 100
-BATCH_SIZE = 64
+BATCH_SIZE = 512
 TICKS_PER_BEAT = 256
 
 def split_input(chunk):
@@ -154,28 +155,24 @@ class MatrixAi(AiInterface):
             f = np.load(os.path.join(self.data_dir, file))
             arr = f['arr_0']
             f.close()
-            print(arr)
-            if np.isnan(np.sum(arr.flatten())):
-                print("!NAN DATA")
             return arr
 
         def load_raw_data():
             files_list = os.listdir(self.data_dir)
-            random.shuffle(files_list)
-            index = 0
             que = queue.Queue()
             thread_count = 0
+            prev_file = None
             while True:
-                file = files_list[index]
+                file = random.choice(files_list)
+                while file == prev_file:
+                    file = random.choice(files_list)
                 file_name = os.fsdecode(file)
 
-                if thread_count < 3:
+                if thread_count < 5:
                     t = threading.Thread(target=lambda q, f: q.put(load_file(f)),
                                          args=(que, file_name))
                     t.start()
                     thread_count += 1
-                    index += 1
-
                 try:
                     arr = que.get(block=False)
                     thread_count -= 1
@@ -183,8 +180,7 @@ class MatrixAi(AiInterface):
                 except queue.Empty:
                     pass
 
-                if index == len(files_list):
-                    index = 0
+                prev_file = file
 
         return tf.data.Dataset.from_generator(load_raw_data,
                                               output_types=(tf.uint8, tf.uint8),
@@ -194,21 +190,21 @@ class MatrixAi(AiInterface):
         inputs = keras.layers.Input(batch_shape=(batch_size, None, 127), batch_size=batch_size)
 
         y = keras.layers.GRU(512, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(inputs)
+        # y = keras.layers.GRU(128, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y)
         y = keras.layers.Dropout(0.3)(y)
         y = keras.layers.Dense(127 * len(self.vocabs[0]))(y)
         y = keras.layers.Reshape((-1, 127, len(self.vocabs[0])))(y)
 
         m = keras.Model(inputs=inputs, outputs=y)
-        m.summary()
+        # m.summary()
         return m
 
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
         data = self.get_dataset()
         data = data.batch(SEQ_LENGTH, drop_remainder=True)
-        train_data = data.skip(10 * BATCH_SIZE).repeat()
-        # train_data = train_data.batch(150*midi_stuff.BASE_TICKS_PER_BEAT).shuffle(10, reshuffle_each_iteration=True).unbatch()
+        train_data = data.skip(2000).repeat()
         train_data = train_data.batch(BATCH_SIZE, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
-        test_data = data.take(10 * BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True).prefetch(1)
+        test_data = data.take(2000).batch(BATCH_SIZE, drop_remainder=True).prefetch(1)
 
         model = self.build_model(BATCH_SIZE)
 
@@ -233,7 +229,7 @@ class MatrixAi(AiInterface):
                   verbose=1,
                   validation_data=test_data,
                   validation_freq=3,
-                  steps_per_epoch=int(15000/BATCH_SIZE))
+                  steps_per_epoch=int(50000/BATCH_SIZE))
         return model
 
     def parse_start(self, start_seq: list) -> np.array:
@@ -283,16 +279,23 @@ class MatrixAi(AiInterface):
         return np.array(sequence)
 
     def generate_text(self, model, num, start, temperature):
+        print("generating...")
         input_eval = self.parse_start(start)
 
-        vocab = self.vocabs[0]
         text_generated = list(input_eval[1:])
 
         input_eval = tf.expand_dims(input_eval, 0)
         model.reset_states()
 
         playing = [0]*127
+
+        vocab = self.vocabs[0]
+        note2idx = {k: i for i, k in enumerate(vocab)}
+        counts2 = [x.count("2") for x in vocab]
+        counts3 = [x.count("3") for x in vocab]
         for i in range(num):
+            if i%150 == 0:
+                print(f"Generating {i}/{num}")
             predictions = model.predict(input_eval)
             predictions = tf.squeeze(predictions, 0)
             predictions = predictions[-1]
@@ -302,19 +305,18 @@ class MatrixAi(AiInterface):
 
             for note, v in enumerate(predictions):
                 value = vocab[int(v)]
-                playing[note] += value.count("2")
-                playing[note] -= value.count("3")
+                playing[note] += counts2[int(v)]
+                playing[note] -= counts3[int(v)]
                 if playing[note] > 0 and value[-1] == "0":
                     new_value = value[:-1] + "1"
-                    while new_value not in vocab:
+                    while new_value not in note2idx:
                         new_value = new_value[1:]
-                    predictions[note] = vocab.index(new_value)
+                    predictions[note] = note2idx[new_value]
                 elif playing[note] <= 0 and value[-1] == "1":
                     new_value = value[:-1] + "0"
-                    while new_value not in vocab:
+                    while new_value not in note2idx:
                         new_value = new_value[1:]
-                    predictions[note] = vocab.index(new_value)
-
+                    predictions[note] = note2idx[new_value]
 
             input_eval = tf.expand_dims([predictions], 0)
 
@@ -338,18 +340,18 @@ class MatrixAi(AiInterface):
 
 if __name__ == "__main__":
     ai = MatrixAi()
-    # ai.process_all()
+    ai.process_all()
 
-    converted, vocabs = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), [])
-    ai.vocabs = vocabs
-    # print(converted.shape)
-    noted = ai.data_to_midi_sequence(converted.tolist())
-    # print(noted)
-    ai.make_midi_file(noted, "temp.mid")
+    # converted, vocabs = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), [])
+    # ai.vocabs = vocabs
+    # # print(converted.shape)
+    # noted = ai.data_to_midi_sequence(converted.tolist())
+    # # print(noted)
+    # ai.make_midi_file(noted, "temp.mid")
 
     # ai.train(1)
 
-    # notes = ai.guess(100)
-    # notes = ai.data_to_midi_sequence(notes)
-    # ai.make_midi_file(notes, "temp.mid")
+    notes = ai.guess(100)
+    notes = ai.data_to_midi_sequence(notes)
+    ai.make_midi_file(notes, "temp.mid")
 
