@@ -2,9 +2,10 @@
 This is an attempt to use neural networks to generate music from scratch. Tensorflow is used for the neural network process and a module called mido is used to process music data. This is further explained in later sections.
 
 ## Table of contents
-- [Data used](#data_used)
-- [Approach 1](#approach_1)
-- [Midi file format](#Midi_format)
+ - [Data used](#data_used)
+ - [Approach 1](#approach_1)
+	 - [Approach 1.1](#approach_1.1)
+ - [Midi file format](#Midi_format)
 
 
 ## Data used
@@ -46,7 +47,7 @@ In this example, some of the time attributes are 0. This simply denotes fire thi
 Translation: Wait 128 ticks, start playing notes 60, 64 and 67 all at a velocity of 100. Wait 512 ticks then stop playing notes 60, 64, 67.
 In music terms: Wait half a beat, play a C major chord for 2 beats.
 
-## Approach 1
+# Approach 1
 
-The first approach 
+## Approach 1.1 (Naivate)
 
