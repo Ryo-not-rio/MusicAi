@@ -25,34 +25,28 @@ try:
 except:
     print("No GPU")
 
-# BATCH_SIZE = 128
-# TICKS_PER_BEAT = 128
-# SEQ_LENGTH = TICKS_PER_BEAT*4*2
-
-#### TO BE ABLE TO RUN ON PERSONAL COMPUTER ###
-BATCH_SIZE = 10
+BATCH_SIZE = 128
 TICKS_PER_BEAT = 128
-SEQ_LENGTH = 10
-#######################################
+SEQ_LENGTH = TICKS_PER_BEAT*4*2
 
 def split_input(chunk):
     return chunk[:-1], chunk[1:]
 
 class MatrixAi(AiInterface):
     def __init__(self):
-        super().__init__("./checkpoints2", "data2", "ai2_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
+        super().__init__("checkpoints2", "data2", "ai2_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
 
     def midi_to_data(self, mid, vocabs) -> (np.array, list):
         if not vocabs:
             vocabs = [["-1"]]
         vocab = vocabs[0]
-        sequence = [[vocab.index("-1")]*127]
+        sequence = [[vocab.index("-1")]*128]
         ticks_per_beat = mid.ticks_per_beat
         mult = self.ticks_per_beat / ticks_per_beat
 
         start = False
-        step_matrix = ["0"] * 127
-        playing = [0] * 127
+        step_matrix = ["0"] * 128
+        playing = [0] * 128
         prev_note = None
         for i, msg in enumerate(mido.merge_tracks(mid.tracks)):
             if msg.type[:4] == "note":
@@ -100,23 +94,23 @@ class MatrixAi(AiInterface):
 
     def data_to_midi_sequence(self, sequence):
         idx2note = np.array(self.vocabs[0])
-        vec_decode = np.vectorize(lambda x: idx2note[int(x)])
-        sequence = vec_decode(np.array(sequence)).tolist()
+        vec_decode = np.vectorize(lambda x: idx2note[x])
+        sequence = vec_decode(np.array(sequence))
         notes = []
-        playing = [0] * 127
+        playing = [0] * 128
         time = 0
         for matrix in sequence:
-            for i, value in enumerate(matrix):
+            for note, value in enumerate(matrix):
                 for v in value:
                     if v == "2":
-                        notes.append([i, 80, time])
-                        playing[i] += 1
+                        notes.append([note, 80, time])
+                        playing[note] += 1
                         time = 0
 
                     elif v == "3":
                         # if playing[i] > 0:
-                        playing[i] -= 1
-                        notes.append([i, 0, time])
+                        playing[note] -= 1
+                        notes.append([note, 0, time])
                         time = 0
 
             time += 1
@@ -125,32 +119,6 @@ class MatrixAi(AiInterface):
             if value > 0:
                 notes.append([note, 0, 0])
         return notes
-
-    def process_all(self, midi_dir: str = "midis") -> list:
-        print("Processing midis...")
-        start = time.time()
-        shutil.rmtree(self.data_dir)
-        os.mkdir(self.data_dir)
-        try:
-            with open(self.vocab_file, "rb") as f:
-                vocabs = pickle.load(f)
-        except FileNotFoundError:
-            vocabs = []
-
-        for file in os.listdir(midi_dir):
-            mid = mido.MidiFile(os.path.join(midi_dir, file))
-            data, vocabs = self.midi_to_data(mid, vocabs)
-
-            with open(os.path.join(self.data_dir, os.path.split(file)[-1][:-3] + "npz"), "wb") as f:
-                np.savez_compressed(f, data)
-
-        with open(self.vocab_file, "wb") as f:
-            pickle.dump(vocabs, f)
-
-        self.vocabs = vocabs
-        print("processed all midi files.")
-        print("time_taken: ", time.time()-start)
-        return vocabs
 
     def get_dataset(self):
         def load_file(file):
@@ -186,15 +154,15 @@ class MatrixAi(AiInterface):
 
         return tf.data.Dataset.from_generator(load_raw_data,
                                               output_types=(tf.uint8, tf.uint8),
-                                              output_shapes=(tf.TensorShape([None, 127]), tf.TensorShape([None, 127]))).unbatch()
+                                              output_shapes=(tf.TensorShape([None, 128]), tf.TensorShape([None, 128]))).unbatch()
 
     def build_model(self, batch_size):
-        inputs = keras.layers.Input(batch_shape=(batch_size, None, 127), batch_size=batch_size)
+        inputs = keras.layers.Input(batch_shape=(batch_size, None, 128), batch_size=batch_size)
 
-        y = keras.layers.GRU(256, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(inputs)
+        y = keras.layers.GRU(256, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2, kernel_regularizer="l2")(inputs)
         y = keras.layers.Dropout(0.3)(y)
-        y = keras.layers.Dense(127 * len(self.vocabs[0]))(y)
-        y = keras.layers.Reshape((-1, 127, len(self.vocabs[0])))(y)
+        y = keras.layers.Dense(128 * len(self.vocabs[0]))(y)
+        y = keras.layers.Reshape((-1, 128, len(self.vocabs[0])))(y)
 
         m = keras.Model(inputs=inputs, outputs=y)
         # m.summary()
@@ -221,7 +189,7 @@ class MatrixAi(AiInterface):
         model.compile(optimizer="adam",
                       loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True),
                       metrics="accuracy", )
-        checkpoint_call_back = tf.keras.callbacks.ModelCheckpoint("checkpoints2/ckpt_{epoch}", save_weights_only=True,
+        checkpoint_call_back = tf.keras.callbacks.ModelCheckpoint(self.check_dir+"/ckpt_{epoch}", save_weights_only=True,
                                                                   save_freq=3)
 
         model.fit(train_data,
@@ -235,11 +203,11 @@ class MatrixAi(AiInterface):
 
     def parse_start(self, start_seq: list) -> np.array:
         vocab = self.vocabs[0]
-        sequence = [[vocab.index("-1")] * 127]
+        sequence = [[vocab.index("-1")] * 128]
 
         start = False
-        step_matrix = ["0"] * 127
-        playing = [0] * 127
+        step_matrix = ["0"] * 128
+        playing = [0] * 128
         prev_note = None
         for i, v in enumerate(start_seq):
             note, vel, time = v
@@ -294,7 +262,6 @@ class MatrixAi(AiInterface):
         counts3 = [x.count("3") for x in vocab]
 
         def parse_func(playing_note, v):
-            v = int(v)
             value = vocab[v]
             playing_note += counts2[v]
             playing_note -= counts3[v]
@@ -328,9 +295,16 @@ class MatrixAi(AiInterface):
             predictions = model.predict(input_eval)
             predictions = tf.squeeze(predictions, 0)
             predictions = predictions[-1]
+
             predictions = tf.map_fn(
-                          lambda x: tf.random.categorical(tf.expand_dims(x, 0) / temperature, num_samples=1).numpy()[-1, 0],
-                          predictions).numpy()
+                lambda x: tf.squeeze(
+                    tf.random.categorical(
+                        tf.expand_dims(
+                            x / temperature, 0
+                       ), num_samples=1, dtype=tf.int32
+                    )
+                ),
+                predictions, fn_output_signature=tf.int32)
 
             playing, predictions = vec_parse_func(playing, predictions)
 
@@ -349,7 +323,7 @@ class MatrixAi(AiInterface):
         if start is None:
             start = [[76, 60, 0], [76, 0, 256]]
 
-        model.build(tf.TensorShape([1, None, 127]))
+        model.build(tf.TensorShape([1, None, 128]))
         generated = self.generate_text(model, num, start, temp)
         return generated
 
@@ -365,9 +339,9 @@ if __name__ == "__main__":
     # # print(noted)
     # ai.make_midi_file(noted, "temp.mid")
 
-    # ai.train(1)
+    ai.train(1)
 
-    notes = ai.guess(300)
+    notes = ai.guess(10000)
     notes = ai.data_to_midi_sequence(notes)
     ai.make_midi_file(notes, "temp.mid")
 

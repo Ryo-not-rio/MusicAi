@@ -24,19 +24,19 @@ except:
     print("No GPU")
 
 
-TICKS_PER_BEAT = 256
+TICKS_PER_BEAT = 128
 BATCH_SIZE = 16
 SEQ_LENGTH = 100
 
-class Ai1(AiInterface):
+class Ai3(AiInterface):
     def __init__(self):
-        super().__init__("checkpoints", "data", "ai1_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
+        super().__init__("checkpoints3", "data3", "ai3_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
 
     def midi_to_data(self, midi: mido.MidiFile, vocabs: list) -> (np.array, list):
         if not vocabs:
-            vocabs = [[None, -1], [None, -1], [None, -1], [None, -1, 0.0]]
+            vocabs = [[None, -1], [None, -1], [None, -1, 0.0]]
         ticks_per_beat = midi.ticks_per_beat
-        simple = [[-1, -1, -1, -1]]
+        simple = [[-1, -1, -1]]
         offset = 0
 
         for i, msg in enumerate(mido.merge_tracks(midi.tracks)):
@@ -48,11 +48,9 @@ class Ai1(AiInterface):
                 if vel != 0:
                     if note not in vocabs[0]:
                         vocabs[0].append(note)
-                    if vel not in vocabs[1]:
-                        vocabs[1].append(vel)
-                    if time not in vocabs[2]:
-                        vocabs[2].append(time)
-                    simple.append([note, vel, time, 0.0])
+                    if time not in vocabs[1]:
+                        vocabs[1].append(time)
+                    simple.append([note, time, 0.0])
                     offset = 0
 
                 else:
@@ -62,14 +60,14 @@ class Ai1(AiInterface):
                     # Loop through end of list until all note with current node value's length is set
                     while ind >= 0:
                         if simple[ind][0] == note:
-                            if simple[ind][3] < 1e-6:
-                                if length not in vocabs[3]:
-                                    vocabs[3].append(length)
-                                simple[ind][3] = length
+                            if simple[ind][2] < 1e-6:
+                                if length not in vocabs[2]:
+                                    vocabs[2].append(length)
+                                simple[ind][2] = length
                             else:
                                 break
 
-                        time = simple[ind][2]
+                        time = simple[ind][1]
                         length += time
                         ind -= 1
 
@@ -79,10 +77,11 @@ class Ai1(AiInterface):
         return np.array(simple), vocabs
 
     def data_to_midi_sequence(self, sequence: list) -> list:
-        vocabs = self.vocabs
         for i, d in enumerate(sequence):
-            sequence[i] = [vocabs[j][x] for j, x in enumerate(d)]
-        sequence = [x for x in sequence if -1 not in x]
+            sequence[i] = [self.vocabs[j][x] for j, x in enumerate(d)]
+
+        sequence = [[x[0], 80, x[1], x[2]] for x in sequence if -1 not in x]
+        print(sequence)
         i = 0
         while i < len(sequence):
             data = sequence[i]
@@ -113,7 +112,7 @@ class Ai1(AiInterface):
         def pad(d):
             if d.shape[0] < SEQ_LENGTH * self.batch_size:
                 pad_length = SEQ_LENGTH * self.batch_size - d.shape[0]
-                tiles = np.tile([[0, 0, 0, 0]], (pad_length, 1))
+                tiles = np.tile([[0, 0, 0]], (pad_length, 1))
                 d = np.concatenate((d, tiles))
             else:
                 num_times = d.shape[0] // (SEQ_LENGTH * self.batch_size)
@@ -132,69 +131,48 @@ class Ai1(AiInterface):
 
         data = np.array(list(map(pad, data)))
         data = np.vstack(data)
-        return data
+
+        X, temp_y = data[:-1], data[1:]
+        dataset = tf.data.Dataset.from_tensor_slices((X, temp_y[:, 2:]))
+        return dataset
 
     def build_model(self, batch_size) -> keras.Model:
-        notes, vels, times, lengths = self.vocabs
+        notes, times, lengths = self.vocabs
 
-        inputs = keras.layers.Input(batch_shape=(batch_size, None, 4), batch_size=batch_size)
-        note_x, vel_x, time_x, length_x = tf.split(inputs, 4, -1)
+        inputs = keras.layers.Input(batch_shape=(batch_size, None, 3), batch_size=batch_size)
+        note_x, time_x, length_x = tf.split(inputs, 3, -1)
 
         emb_dim1 = 32
         note_x1 = keras.layers.Embedding(128, emb_dim1, mask_zero=True)(note_x)
         note_x1 = keras.layers.Reshape((-1, emb_dim1))(note_x1)
         note_x1 = keras.layers.Dropout(0.3)(note_x1)
 
-        emb_dim2 = 32
-        vel_x1 = keras.layers.Embedding(128, emb_dim2, mask_zero=True)(vel_x)
-        vel_x1 = keras.layers.Reshape((-1, emb_dim2))(vel_x1)
-        vel_x1 = keras.layers.Dropout(0.3)(vel_x1)
-
-        emb_dim3 = 64
-        time_x1 = keras.layers.Embedding(1000, emb_dim3, mask_zero=True)(time_x)
-        time_x1 = keras.layers.Reshape((-1, emb_dim3))(time_x1)
+        emb_dim2 = 64
+        time_x1 = keras.layers.Embedding(1500, emb_dim2, mask_zero=True)(time_x)
+        time_x1 = keras.layers.Reshape((-1, emb_dim2))(time_x1)
         time_x1 = keras.layers.Dropout(0.3)(time_x1)
 
-        emb_dim4 = 64
-        length_x1 = keras.layers.Embedding(1500, emb_dim4, mask_zero=True)(length_x)
-        length_x1 = keras.layers.Reshape((-1, emb_dim4))(length_x1)
+        emb_dim3 = 64
+        length_x1 = keras.layers.Embedding(1500, emb_dim3, mask_zero=True)(length_x)
+        length_x1 = keras.layers.Reshape((-1, emb_dim3))(length_x1)
         length_x1 = keras.layers.Dropout(0.3)(length_x1)
 
-        y1 = keras.layers.concatenate((note_x1, vel_x1, time_x1, length_x1), -1)
+        y1 = keras.layers.concatenate((note_x1, time_x1, length_x1), -1)
         y1 = keras.layers.Dropout(0.1)(y1)
 
-        # y1 = keras.layers.GRU(512, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y1)
-        # y1 = keras.layers.BatchNormalization()(y1)
-        # # y_or1 = keras.layers.Dropout(0.4)(y_or1)
-        #
-        # y_1 = keras.layers.GRU(128, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y1)
-        # y_1 = keras.layers.Dropout(0.3)(y_1)
-        #
-        # y_2 = keras.layers.GRU(128, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y1)
-        # y_2 = keras.layers.Dropout(0.3)(y_2)
+        y_1 = keras.layers.Dense(len(times), name="time")(y1)
+        y_2 = keras.layers.Dense(len(lengths), name="length")(y1)
 
-        y_1 = keras.layers.Dense(len(notes), name="note")(y1)
-        y_2 = keras.layers.Dense(len(vels), name="vel")(y1)
-        y_3 = keras.layers.Dense(len(times), name="time")(y1)  # (keras.layers.Dropout(0.3)(y1))
-        y_4 = keras.layers.Dense(len(lengths), name="length")(y1)  # (keras.layers.Dropout(0.3)(y1))
-
-        m = keras.Model(inputs=inputs, outputs=[y_1, y_2, y_3, y_4])
+        m = keras.Model(inputs=inputs, outputs=[y_1, y_2])
         return m
 
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
-        data = self.get_dataset()
-        X, temp_y = data[:-1], data[1:]
-        note_y = temp_y[:, 0]
-        vel_y = temp_y[:, 1]
-        time_y = temp_y[:, 2]
-        length_y = temp_y[:, 3]
-        dataset = tf.data.Dataset.from_tensor_slices(
-            (X, {"note": note_y, "vel": vel_y, "time": time_y, "length": length_y}))
+        dataset = self.get_dataset()
         dataset = dataset.batch(SEQ_LENGTH, drop_remainder=True)
-        train_data = dataset.skip(self.batch_size * 30)\
+        train_data = dataset.skip(BATCH_SIZE*5)\
                     .batch(BATCH_SIZE, drop_remainder=True)\
-                    .shuffle(50000, reshuffle_each_iteration=True)
-        test_data = dataset.take(self.batch_size * 30).batch(BATCH_SIZE, drop_remainder=True)
+                    .shuffle(BATCH_SIZE*5, reshuffle_each_iteration=True)
+        test_data = dataset.take(SEQ_LENGTH * 1000).batch(BATCH_SIZE, drop_remainder=True)
 
         model = self.build_model(self.batch_size)
 
@@ -208,14 +186,8 @@ class Ai1(AiInterface):
             AiInterface.remove_checkpoints(self.check_dir)
 
         model.compile(optimizer="adam",
-                      loss={"note": keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
-                            "vel": keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
-                            "time": keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
-                            "length": keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"), },
-                      metrics={"note": "accuracy",
-                               "vel": "accuracy",
-                               "time": "accuracy",
-                               "length": "accuracy", }, )
+                      loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
+                      metrics="accuracy",)
         checkpoint_call_back = tf.keras.callbacks.ModelCheckpoint(self.check_dir+"/ckpt_{epoch}", save_weights_only=True,
                                                                   save_freq=3)
 
@@ -283,11 +255,12 @@ class Ai1(AiInterface):
         return generated
 
 if __name__ == "__main__":
-    ai = Ai1()
-    # ai.train(1, cont=False)
+    ai = Ai3()
+    # ai.process_all()
     # converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)[0]
     # unconverted = ai.data_to_midi_sequence(list(converted))
     # ai.make_midi_file(unconverted, "temp.mid")
+    ai.train(1, cont=False)
     # notes = ai.guess(100)
     # notes = ai.data_to_midi_sequence(notes)
     # ai.make_midi_file(notes, "temp.mid")

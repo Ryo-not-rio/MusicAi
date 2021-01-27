@@ -8,6 +8,7 @@ import pickle
 import mido
 import numpy as np
 from typing import Union
+import time
 
 
 class AiInterface:
@@ -28,14 +29,13 @@ class AiInterface:
         self.loss = -1
         self.prev_loss = 100
         self.vocab_file = vocab_file
+        if not os.path.exists(data_dir):
+            os.makedirs(data_dir)
         try:
             with open(vocab_file, "rb") as f:
                 self.vocabs = pickle.load(f)
         except FileNotFoundError:
             self.process_all() # Sets self.vocabs
-
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
 
     def make_midi_file(self, notes, file="new.mid"):
         new_mid = mido.MidiFile()
@@ -92,10 +92,11 @@ class AiInterface:
     def midi_to_data(self, midi: mido.MidiFile, vocabs: list) -> (np.array, list): raise NotImplementedError
 
     @abstractmethod
-    def data_to_midi_sequence(self, sequence: list) -> list: raise NotImplementedError
+    def data_to_midi_sequence(self, list) -> list: raise NotImplementedError
 
     def process_all(self, midi_dir: str = "midis") -> list:
         print("Processing midis...")
+        start = time.time()
         shutil.rmtree(self.data_dir)
         os.mkdir(self.data_dir)
         try:
@@ -108,14 +109,15 @@ class AiInterface:
             mid = mido.MidiFile(os.path.join(midi_dir, file))
             data, vocabs = self.midi_to_data(mid, vocabs)
 
-            with open(os.path.join(self.data_dir, os.path.split(file)[-1][:-3] + "npy"), "wb") as f:
-                np.save(f, data)
+            with open(os.path.join(self.data_dir, os.path.split(file)[-1][:-3] + "npz"), "wb") as f:
+                np.savez_compressed(f, data)
 
         with open(self.vocab_file, "wb") as f:
             pickle.dump(vocabs, f)
 
         self.vocabs = vocabs
         print("processed all midi files.")
+        print("time_taken: ", time.time()-start)
         return vocabs
 
     @abstractmethod
