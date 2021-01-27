@@ -2,11 +2,10 @@
 This is an attempt to use neural networks to generate music from scratch. Tensorflow is used for the neural network process and a module called mido is used to process music data. This is further explained in later sections.
 
 ## Table of contents
- - [Data used](##data_used)
- - [Midi file format](##Midi_format)
- - [Approach 1](#approach_1)
-	 - [Approach 1.1](##approach_1.1)
- 
+ - [Data used](#data-used)
+ - [Approach 1](#approach-1)
+	 - [Approach 1.1](#approach-1.1)
+ - [Midi file format](#midi-format)
 
 
 ## Data used
@@ -50,5 +49,6 @@ In music terms: Wait half a beat, play a C major chord for 2 beats.
 
 # Approach 1
 
-## Approach 1.1 (Naivate)
+## Approach 1.1 (Naivete)
+
 
