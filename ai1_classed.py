@@ -43,13 +43,14 @@ class Ai1(AiInterface):
             if msg.type[:4] == "note":
                 note = msg.note
                 vel = msg.velocity
-                time = round(float(msg.time / ticks_per_beat + offset), 5)
+                time = msg.time / ticks_per_beat + offset
 
                 if vel != 0:
                     if note not in vocabs[0]:
                         vocabs[0].append(note)
                     if vel not in vocabs[1]:
                         vocabs[1].append(vel)
+                    time = round(time, 6)
                     if time not in vocabs[2]:
                         vocabs[2].append(time)
                     simple.append([note, vel, time, 0])
@@ -63,6 +64,7 @@ class Ai1(AiInterface):
                     while ind >= 0:
                         if simple[ind][0] == note:
                             if simple[ind][3] == 0:
+                                length = round(length, 5)
                                 if length not in vocabs[3]:
                                     vocabs[3].append(length)
                                 simple[ind][3] = length
@@ -70,7 +72,7 @@ class Ai1(AiInterface):
                                 break
 
                         time = simple[ind][2]
-                        length = round(length + time, 5)
+                        length += time
                         ind -= 1
 
         for i, event in enumerate(simple):
