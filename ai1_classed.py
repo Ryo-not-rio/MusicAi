@@ -9,7 +9,7 @@ import tensorflow as tf
 from tensorflow import keras
 import numpy as np
 import shutil
-from math import log
+from math import isclose
 import pickle
 import ast
 
@@ -23,10 +23,10 @@ try:
 except:
     print("No GPU")
 
+TICKS_PER_BEAT = 512
+BATCH_SIZE = 256
+SEQ_LENGTH = 200
 
-TICKS_PER_BEAT = 256
-BATCH_SIZE = 16
-SEQ_LENGTH = 100
 
 class Ai1(AiInterface):
     def __init__(self):
@@ -34,7 +34,7 @@ class Ai1(AiInterface):
 
     def midi_to_data(self, midi: mido.MidiFile, vocabs: list) -> (np.array, list):
         if not vocabs:
-            vocabs = [[None, -1], [None, -1], [None, -1], [None, -1, 0.0]]
+            vocabs = [[-1], [-1], [-1], [-1, 0]]
         ticks_per_beat = midi.ticks_per_beat
         simple = [[-1, -1, -1, -1]]
         offset = 0
@@ -43,7 +43,7 @@ class Ai1(AiInterface):
             if msg.type[:4] == "note":
                 note = msg.note
                 vel = msg.velocity
-                time = float(msg.time / ticks_per_beat + offset)
+                time = round(float(msg.time / ticks_per_beat + offset), 4)
 
                 if vel != 0:
                     if note not in vocabs[0]:
@@ -52,7 +52,7 @@ class Ai1(AiInterface):
                         vocabs[1].append(vel)
                     if time not in vocabs[2]:
                         vocabs[2].append(time)
-                    simple.append([note, vel, time, 0.0])
+                    simple.append([note, vel, time, 0])
                     offset = 0
 
                 else:
@@ -62,7 +62,7 @@ class Ai1(AiInterface):
                     # Loop through end of list until all note with current node value's length is set
                     while ind >= 0:
                         if simple[ind][0] == note:
-                            if simple[ind][3] < 1e-6:
+                            if simple[ind][3] == 0:
                                 if length not in vocabs[3]:
                                     vocabs[3].append(length)
                                 simple[ind][3] = length
@@ -80,8 +80,9 @@ class Ai1(AiInterface):
 
     def data_to_midi_sequence(self, sequence: list) -> list:
         vocabs = self.vocabs
-        for i, d in enumerate(sequence):
-            sequence[i] = [vocabs[j][x] for j, x in enumerate(d)]
+        for i, data in enumerate(sequence):
+            sequence[i] = [vocabs[j][x] for j, x in enumerate(data)]
+
         sequence = [x for x in sequence if -1 not in x]
         i = 0
         while i < len(sequence):
@@ -92,11 +93,12 @@ class Ai1(AiInterface):
 
             if vel != 0:
                 length = data[3]
-                insert_ind = i+1
+                insert_ind = i + 1
                 while insert_ind < len(sequence) and length > sequence[insert_ind][2]:
                     length -= sequence[insert_ind][2]
                     insert_ind += 1
-                if not (insert_ind < len(sequence) and sequence[insert_ind][0] == note and sequence[insert_ind][1] == 0):
+                if not (insert_ind < len(sequence) and sequence[insert_ind][0] == note and sequence[insert_ind][
+                    1] == 0):
                     if insert_ind < len(sequence):
                         sequence[insert_ind][2] -= length
                     sequence.insert(insert_ind, [note, 0, length])
@@ -110,19 +112,6 @@ class Ai1(AiInterface):
         return sequence
 
     def get_dataset(self) -> Union[np.array, tf.data.Dataset]:
-        def pad(d):
-            if d.shape[0] < SEQ_LENGTH * self.batch_size:
-                pad_length = SEQ_LENGTH * self.batch_size - d.shape[0]
-                tiles = np.tile([[0, 0, 0, 0]], (pad_length, 1))
-                d = np.concatenate((d, tiles))
-            else:
-                num_times = d.shape[0] // (SEQ_LENGTH * self.batch_size)
-                first = d[:SEQ_LENGTH * self.batch_size * num_times]
-                last = d[-SEQ_LENGTH * self.batch_size:]
-                d = np.concatenate((first, last))
-
-            return d
-
         data = []
 
         for file in os.listdir(self.data_dir):
@@ -130,7 +119,6 @@ class Ai1(AiInterface):
             with(open(os.path.join(self.data_dir, file_name), "rb")) as f:
                 data.append(np.load(f)['arr_0'])
 
-        data = np.array(list(map(pad, data)))
         data = np.vstack(data)
         return data
 
@@ -141,30 +129,42 @@ class Ai1(AiInterface):
         note_x, vel_x, time_x, length_x = tf.split(inputs, 4, -1)
 
         emb_dim1 = 32
-        note_x1 = keras.layers.Embedding(128, emb_dim1, mask_zero=True)(note_x)
+        note_x1 = keras.layers.Embedding(128, emb_dim1)(note_x)
         note_x1 = keras.layers.Reshape((-1, emb_dim1))(note_x1)
-        note_x1 = keras.layers.Dropout(0.3)(note_x1)
+        note_x1 = keras.layers.Dropout(0.2)(note_x1)
 
         emb_dim2 = 32
-        vel_x1 = keras.layers.Embedding(128, emb_dim2, mask_zero=True)(vel_x)
+        vel_x1 = keras.layers.Embedding(128, emb_dim2)(vel_x)
         vel_x1 = keras.layers.Reshape((-1, emb_dim2))(vel_x1)
-        vel_x1 = keras.layers.Dropout(0.3)(vel_x1)
+        vel_x1 = keras.layers.Dropout(0.2)(vel_x1)
 
         emb_dim3 = 64
-        time_x1 = keras.layers.Embedding(1000, emb_dim3, mask_zero=True)(time_x)
+        time_x1 = keras.layers.Embedding(1000, emb_dim3)(time_x)
         time_x1 = keras.layers.Reshape((-1, emb_dim3))(time_x1)
-        time_x1 = keras.layers.Dropout(0.3)(time_x1)
+        time_x1 = keras.layers.Dropout(0.2)(time_x1)
 
         emb_dim4 = 64
-        length_x1 = keras.layers.Embedding(1500, emb_dim4, mask_zero=True)(length_x)
+        length_x1 = keras.layers.Embedding(1500, emb_dim4)(length_x)
         length_x1 = keras.layers.Reshape((-1, emb_dim4))(length_x1)
-        length_x1 = keras.layers.Dropout(0.3)(length_x1)
+        length_x1 = keras.layers.Dropout(0.2)(length_x1)
+
+        note_x1 = keras.layers.GRU(128, return_sequences=True, stateful=True, dropout=0.2, kernel_regularizer="l2")(
+            note_x1)
+        vel_x1 = keras.layers.GRU(128, return_sequences=True, stateful=True, dropout=0.2, kernel_regularizer="l2")(
+            vel_x1)
+        time_x1 = keras.layers.GRU(128, return_sequences=True, stateful=True, dropout=0.2, kernel_regularizer="l2")(
+            time_x1)
+        length_x1 = keras.layers.GRU(128, return_sequences=True, stateful=True, dropout=0.2, kernel_regularizer="l2")(
+            length_x1)
 
         y1 = keras.layers.concatenate((note_x1, vel_x1, time_x1, length_x1), -1)
         y1 = keras.layers.Dropout(0.1)(y1)
 
-        # y1 = keras.layers.GRU(512, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y1)
-        # y1 = keras.layers.BatchNormalization()(y1)
+        # y1 = keras.layers.GRU(512, return_sequences=True, stateful=True, dropout=0.2, kernel_regularizer="l2")(y1)
+        # y1 = keras.layers.Dropout(0.3)(y1)
+        y1 = keras.layers.GRU(512, return_sequences=True, stateful=True, dropout=0.2, kernel_regularizer="l2")(y1)
+        y1 = keras.layers.BatchNormalization()(y1)
+
         # # y_or1 = keras.layers.Dropout(0.4)(y_or1)
         #
         # y_1 = keras.layers.GRU(128, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y1)
@@ -191,10 +191,10 @@ class Ai1(AiInterface):
         dataset = tf.data.Dataset.from_tensor_slices(
             (X, {"note": note_y, "vel": vel_y, "time": time_y, "length": length_y}))
         dataset = dataset.batch(SEQ_LENGTH, drop_remainder=True)
-        train_data = dataset.skip(self.batch_size * 30)\
-                    .batch(BATCH_SIZE, drop_remainder=True)\
-                    .shuffle(50000, reshuffle_each_iteration=True)
-        test_data = dataset.take(self.batch_size * 30).batch(BATCH_SIZE, drop_remainder=True)
+        train_data = dataset.skip(500).repeat() \
+            .batch(SEQ_LENGTH * 50).shuffle(5000, reshuffle_each_iteration=True).unbatch() \
+            .repeat().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
+        test_data = dataset.take(500).batch(BATCH_SIZE, drop_remainder=True)
 
         model = self.build_model(self.batch_size)
 
@@ -208,15 +208,10 @@ class Ai1(AiInterface):
             AiInterface.remove_checkpoints(self.check_dir)
 
         model.compile(optimizer="adam",
-                      loss={"note": keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
-                            "vel": keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
-                            "time": keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
-                            "length": keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"), },
-                      metrics={"note": "accuracy",
-                               "vel": "accuracy",
-                               "time": "accuracy",
-                               "length": "accuracy", }, )
-        checkpoint_call_back = tf.keras.callbacks.ModelCheckpoint(self.check_dir+"/ckpt_{epoch}", save_weights_only=True,
+                      loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
+                      metrics="accuracy", )
+        checkpoint_call_back = tf.keras.callbacks.ModelCheckpoint(self.check_dir + "/ckpt_{epoch}",
+                                                                  save_weights_only=True,
                                                                   save_freq=3)
 
         model.fit(train_data,
@@ -226,7 +221,8 @@ class Ai1(AiInterface):
                              self.loss_callback()],
                   verbose=2,
                   validation_data=test_data,
-                  validation_freq=3)
+                  validation_freq=3,
+                  steps_per_epoch=int(20000 / BATCH_SIZE))
         return model
 
     def generate_text(self, model, num, start, temperature) -> list:
@@ -234,7 +230,7 @@ class Ai1(AiInterface):
         for i, item in enumerate(start):
             start[i] = [vocabs[j].index(x) for j, x in enumerate(item)]
         input_eval = np.array([start])  # Formatting the start string
-        input_eval = tf.expand_dims(input_eval, 0)
+        # input_eval = tf.expand_dims(input_eval, 0)
 
         text_generated = []
 
@@ -251,14 +247,14 @@ class Ai1(AiInterface):
                 length_predict, 0)
             note_predict, vel_predict, time_predict, length_predict = note_predict / temperature, vel_predict / temperature, time_predict / temperature, length_predict / temperature
             note_id, vel_id, time_predict, length_predict = \
-            tf.random.categorical(note_predict, num_samples=1).numpy()[
-                -1, 0], \
-            tf.random.categorical(vel_predict, num_samples=1).numpy()[
-                -1, 0], \
-            tf.random.categorical(time_predict, num_samples=1).numpy()[
-                -1, 0], \
-            tf.random.categorical(length_predict, num_samples=1).numpy()[
-                -1, 0]
+                tf.random.categorical(note_predict, num_samples=1).numpy()[
+                    -1, 0], \
+                tf.random.categorical(vel_predict, num_samples=1).numpy()[
+                    -1, 0], \
+                tf.random.categorical(time_predict, num_samples=1).numpy()[
+                    -1, 0], \
+                tf.random.categorical(length_predict, num_samples=1).numpy()[
+                    -1, 0]
 
             input_eval = tf.expand_dims(np.array([note_id, vel_id, time_predict, length_predict]), 0)
 
@@ -282,12 +278,14 @@ class Ai1(AiInterface):
         generated = self.generate_text(model, num, start, temp)
         return generated
 
+
 if __name__ == "__main__":
     ai = Ai1()
     # ai.train(1, cont=False)
-    # converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)[0]
-    # unconverted = ai.data_to_midi_sequence(list(converted))
-    # ai.make_midi_file(unconverted, "temp.mid")
+    # ai.process_all()
+    converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)
+    unconverted = ai.data_to_midi_sequence(list(converted[0]))
+    ai.make_midi_file(unconverted, "temp.mid")
     # notes = ai.guess(100)
     # notes = ai.data_to_midi_sequence(notes)
     # ai.make_midi_file(notes, "temp.mid")

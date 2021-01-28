@@ -135,8 +135,10 @@ class AiInterface:
     @abstractmethod
     def guess(self, num, start, temp, model, checkpoint_num) -> list: raise NotImplementedError
 
-    def save_whole_model(self, save_dir, checkpoint_num=None):
+    def save_whole_model(self, save_dir, model_name, checkpoint_num=None):
         checkpoint = self.get_checkpoint(checkpoint_num)
         model = self.build_model(1)
         model.load_weights(checkpoint).expect_partial()
-        model.save(save_dir)
+        model.save(os.path.join(save_dir, model_name))
+        with open(os.path.join(save_dir, model_name+".pkl")) as f:
+            pickle.dump(self.vocabs, f)

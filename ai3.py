@@ -34,7 +34,7 @@ class Ai3(AiInterface):
 
     def midi_to_data(self, midi: mido.MidiFile, vocabs: list) -> (np.array, list):
         if not vocabs:
-            vocabs = [[None, -1], [None, -1], [None, -1, 0.0]]
+            vocabs = [[None, -1], [None, -1], [None, -1, 0]]
         ticks_per_beat = midi.ticks_per_beat
         simple = [[-1, -1, -1]]
         offset = 0
@@ -43,14 +43,14 @@ class Ai3(AiInterface):
             if msg.type[:4] == "note":
                 note = msg.note
                 vel = msg.velocity
-                time = float(msg.time / ticks_per_beat + offset)
+                time = round(float(msg.time / ticks_per_beat + offset), 4)
 
                 if vel != 0:
                     if note not in vocabs[0]:
                         vocabs[0].append(note)
                     if time not in vocabs[1]:
                         vocabs[1].append(time)
-                    simple.append([note, time, 0.0])
+                    simple.append([note, time, 0])
                     offset = 0
 
                 else:
@@ -60,7 +60,7 @@ class Ai3(AiInterface):
                     # Loop through end of list until all note with current node value's length is set
                     while ind >= 0:
                         if simple[ind][0] == note:
-                            if simple[ind][2] < 1e-6:
+                            if simple[ind][2] == 0:
                                 if length not in vocabs[2]:
                                     vocabs[2].append(length)
                                 simple[ind][2] = length
@@ -133,7 +133,7 @@ class Ai3(AiInterface):
         data = np.vstack(data)
 
         X, temp_y = data[:-1], data[1:]
-        dataset = tf.data.Dataset.from_tensor_slices((X, temp_y[:, 2:]))
+        dataset = tf.data.Dataset.from_tensor_slices((X, {"times": temp_y[:, 1], "lengths": temp_y[:, 2]}))
         return dataset
 
     def build_model(self, batch_size) -> keras.Model:
@@ -160,10 +160,11 @@ class Ai3(AiInterface):
         y1 = keras.layers.concatenate((note_x1, time_x1, length_x1), -1)
         y1 = keras.layers.Dropout(0.1)(y1)
 
-        y_1 = keras.layers.Dense(len(times), name="time")(y1)
-        y_2 = keras.layers.Dense(len(lengths), name="length")(y1)
+        y_1 = keras.layers.Dense(len(times), name="times")(y1)
+        y_2 = keras.layers.Dense(len(lengths), name="lengths")(y1)
 
         m = keras.Model(inputs=inputs, outputs=[y_1, y_2])
+        m.summary()
         return m
 
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
@@ -171,9 +172,12 @@ class Ai3(AiInterface):
         dataset = dataset.batch(SEQ_LENGTH, drop_remainder=True)
         train_data = dataset.skip(BATCH_SIZE*5)\
                     .batch(BATCH_SIZE, drop_remainder=True)\
-                    .shuffle(BATCH_SIZE*5, reshuffle_each_iteration=True)
-        test_data = dataset.take(SEQ_LENGTH * 1000).batch(BATCH_SIZE, drop_remainder=True)
+                    .shuffle(500, reshuffle_each_iteration=True)
+        test_data = dataset.take(BATCH_SIZE*5).batch(BATCH_SIZE, drop_remainder=True)
 
+        # for x in train_data.take(1):
+        #     print(x)
+        # exit()
         model = self.build_model(self.batch_size)
 
         ini_epoch = 0
