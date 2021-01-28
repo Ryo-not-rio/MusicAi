@@ -141,5 +141,5 @@ class AiInterface:
         model = self.build_model(1)
         model.load_weights(checkpoint).expect_partial()
         model.save(os.path.join(save_dir, model_name))
-        with open(os.path.join(save_dir, model_name+".pkl")) as f:
+        with open(os.path.join(save_dir, model_name+".pkl"), "wb") as f:
             pickle.dump(self.vocabs, f)
