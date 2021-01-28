@@ -34,7 +34,7 @@ class Ai3(AiInterface):
 
     def midi_to_data(self, midi: mido.MidiFile, vocabs: list) -> (np.array, list):
         if not vocabs:
-            vocabs = [[None, -1], [None, -1], [None, -1, 0]]
+            vocabs = [[-1], [-1], [-1, 0]]
         ticks_per_beat = midi.ticks_per_beat
         simple = [[-1, -1, -1]]
         offset = 0
@@ -59,15 +59,29 @@ class Ai3(AiInterface):
                     ind = len(simple) - 1
                     length = time
                     # Loop through end of list until all note with current node value's length is set
+                    change_ind = None
+                    last_length = None
+
                     while ind >= 0:
                         if simple[ind][0] == note:
                             if simple[ind][2] == 0:
+                                change_ind = ind
+                                last_length = length
+                            elif change_ind is not None:
+                                length = last_length
                                 length = round(length, 5)
                                 if length not in vocabs[2]:
                                     vocabs[2].append(length)
-                                simple[ind][2] = length
-                            else:
+                                simple[change_ind][2] = length
                                 break
+
+                        elif ind == 0 and change_ind is not None:
+                            length = last_length
+                            length = round(length, 5)
+                            if length not in vocabs[2]:
+                                vocabs[2].append(length)
+                            simple[change_ind][2] = length
+                            break
 
                         time = simple[ind][1]
                         length += time
@@ -145,17 +159,17 @@ class Ai3(AiInterface):
         note_x, time_x, length_x = tf.split(inputs, 3, -1)
 
         emb_dim1 = 32
-        note_x1 = keras.layers.Embedding(128, emb_dim1, mask_zero=True)(note_x)
+        note_x1 = keras.layers.Embedding(128, emb_dim1)(note_x)
         note_x1 = keras.layers.Reshape((-1, emb_dim1))(note_x1)
         note_x1 = keras.layers.Dropout(0.3)(note_x1)
 
         emb_dim2 = 64
-        time_x1 = keras.layers.Embedding(1500, emb_dim2, mask_zero=True)(time_x)
+        time_x1 = keras.layers.Embedding(1500, emb_dim2)(time_x)
         time_x1 = keras.layers.Reshape((-1, emb_dim2))(time_x1)
         time_x1 = keras.layers.Dropout(0.3)(time_x1)
 
         emb_dim3 = 64
-        length_x1 = keras.layers.Embedding(1500, emb_dim3, mask_zero=True)(length_x)
+        length_x1 = keras.layers.Embedding(1500, emb_dim3)(length_x)
         length_x1 = keras.layers.Reshape((-1, emb_dim3))(length_x1)
         length_x1 = keras.layers.Dropout(0.3)(length_x1)
 

@@ -61,15 +61,29 @@ class Ai1(AiInterface):
                     ind = len(simple) - 1
                     length = time
                     # Loop through end of list until all note with current node value's length is set
+                    change_ind = None
+                    last_length = None
+
                     while ind >= 0:
                         if simple[ind][0] == note:
                             if simple[ind][3] == 0:
+                                change_ind = ind
+                                last_length = length
+                            elif change_ind is not None:
+                                length = last_length
                                 length = round(length, 5)
                                 if length not in vocabs[3]:
                                     vocabs[3].append(length)
-                                simple[ind][3] = length
-                            else:
+                                simple[change_ind][3] = length
                                 break
+
+                        elif ind == 0 and change_ind is not None:
+                            length = last_length
+                            length = round(length, 5)
+                            if length not in vocabs[3]:
+                                vocabs[3].append(length)
+                            simple[change_ind][3] = length
+                            break
 
                         time = simple[ind][2]
                         length += time
@@ -99,11 +113,11 @@ class Ai1(AiInterface):
                 while insert_ind < len(sequence) and length > sequence[insert_ind][2]:
                     length -= sequence[insert_ind][2]
                     insert_ind += 1
-                if not (insert_ind < len(sequence) and sequence[insert_ind][0] == note and sequence[insert_ind][
-                    1] == 0):
-                    if insert_ind < len(sequence):
-                        sequence[insert_ind][2] -= length
-                    sequence.insert(insert_ind, [note, 0, length])
+                # if not (insert_ind < len(sequence) and sequence[insert_ind][0] == note and sequence[insert_ind][
+                #     1] == 0):
+                if insert_ind < len(sequence):
+                    sequence[insert_ind][2] -= length
+                sequence.insert(insert_ind, [note, 0, length])
                 del data[3]
 
             i += 1
@@ -286,7 +300,9 @@ if __name__ == "__main__":
     # ai.train(1, cont=False)
     # ai.process_all()
     converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)
+    print([ai.vocabs[j][x] for j, x in enumerate(converted[0][1])])
     unconverted = ai.data_to_midi_sequence(list(converted[0]))
+    print(unconverted)
     ai.make_midi_file(unconverted, "temp.mid")
     # notes = ai.guess(100)
     # notes = ai.data_to_midi_sequence(notes)
