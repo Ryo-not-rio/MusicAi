@@ -96,6 +96,7 @@ class AiInterface:
 
     def process_all(self, midi_dir: str = "midis") -> list:
         print("Processing midis...")
+
         start = time.time()
         shutil.rmtree(self.data_dir)
         os.mkdir(self.data_dir)

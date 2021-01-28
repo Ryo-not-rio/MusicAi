@@ -43,7 +43,7 @@ class Ai3(AiInterface):
             if msg.type[:4] == "note":
                 note = msg.note
                 vel = msg.velocity
-                time = round(float(msg.time / ticks_per_beat + offset), 4)
+                time = round(float(msg.time / ticks_per_beat + offset), 5)
 
                 if vel != 0:
                     if note not in vocabs[0]:
@@ -68,7 +68,7 @@ class Ai3(AiInterface):
                                 break
 
                         time = simple[ind][1]
-                        length += time
+                        length = round(length + time, 5)
                         ind -= 1
 
         for i, event in enumerate(simple):
