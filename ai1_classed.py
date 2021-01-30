@@ -113,11 +113,11 @@ class Ai1(AiInterface):
                 while insert_ind < len(sequence) and length > sequence[insert_ind][2]:
                     length -= sequence[insert_ind][2]
                     insert_ind += 1
-                # if not (insert_ind < len(sequence) and sequence[insert_ind][0] == note and sequence[insert_ind][
-                #     1] == 0):
-                if insert_ind < len(sequence):
-                    sequence[insert_ind][2] -= length
-                sequence.insert(insert_ind, [note, 0, length])
+                if not (insert_ind < len(sequence) and sequence[insert_ind][0] == note and sequence[insert_ind][
+                    1] == 0):
+                    if insert_ind < len(sequence):
+                        sequence[insert_ind][2] -= length
+                    sequence.insert(insert_ind, [note, 0, length])
                 del data[3]
 
             i += 1
@@ -159,8 +159,8 @@ class Ai1(AiInterface):
         time_x1 = keras.layers.Reshape((-1, emb_dim3))(time_x1)
         time_x1 = keras.layers.Dropout(0.2)(time_x1)
 
-        emb_dim4 = 64
-        length_x1 = keras.layers.Embedding(1500, emb_dim4)(length_x)
+        emb_dim4 = 128
+        length_x1 = keras.layers.Embedding(2500, emb_dim4)(length_x)
         length_x1 = keras.layers.Reshape((-1, emb_dim4))(length_x1)
         length_x1 = keras.layers.Dropout(0.2)(length_x1)
 
@@ -174,20 +174,11 @@ class Ai1(AiInterface):
             length_x1)
 
         y1 = keras.layers.concatenate((note_x1, vel_x1, time_x1, length_x1), -1)
-        y1 = keras.layers.Dropout(0.1)(y1)
+        y1 = keras.layers.Dropout(0.3)(y1)
 
-        # y1 = keras.layers.GRU(512, return_sequences=True, stateful=True, dropout=0.2, kernel_regularizer="l2")(y1)
-        # y1 = keras.layers.Dropout(0.3)(y1)
         y1 = keras.layers.GRU(512, return_sequences=True, stateful=True, dropout=0.2, kernel_regularizer="l2")(y1)
         y1 = keras.layers.BatchNormalization()(y1)
 
-        # # y_or1 = keras.layers.Dropout(0.4)(y_or1)
-        #
-        # y_1 = keras.layers.GRU(128, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y1)
-        # y_1 = keras.layers.Dropout(0.3)(y_1)
-        #
-        # y_2 = keras.layers.GRU(128, batch_size=batch_size, return_sequences=True, stateful=True, dropout=0.2)(y1)
-        # y_2 = keras.layers.Dropout(0.3)(y_2)
 
         y_1 = keras.layers.Dense(len(notes), name="note")(y1)
         y_2 = keras.layers.Dense(len(vels), name="vel")(y1)
@@ -207,8 +198,8 @@ class Ai1(AiInterface):
         dataset = tf.data.Dataset.from_tensor_slices(
             (X, {"note": note_y, "vel": vel_y, "time": time_y, "length": length_y}))
         dataset = dataset.batch(SEQ_LENGTH, drop_remainder=True)
-        train_data = dataset.skip(500).repeat() \
-            .batch(SEQ_LENGTH * 50).shuffle(5000, reshuffle_each_iteration=True).unbatch() \
+        train_data = dataset.skip(500) \
+            .batch(50).shuffle(10000, reshuffle_each_iteration=True).unbatch() \
             .repeat().batch(BATCH_SIZE).prefetch(tf.data.AUTOTUNE)
         test_data = dataset.take(500).batch(BATCH_SIZE, drop_remainder=True)
 
@@ -227,8 +218,7 @@ class Ai1(AiInterface):
                       loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
                       metrics="accuracy", )
         checkpoint_call_back = tf.keras.callbacks.ModelCheckpoint(self.check_dir + "/ckpt_{epoch}",
-                                                                  save_weights_only=True,
-                                                                  save_freq=3)
+                                                                  save_weights_only=True)
 
         model.fit(train_data,
                   epochs=epochs + ini_epoch, initial_epoch=ini_epoch,
@@ -300,9 +290,7 @@ if __name__ == "__main__":
     # ai.train(1, cont=False)
     # ai.process_all()
     converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)
-    print([ai.vocabs[j][x] for j, x in enumerate(converted[0][1])])
     unconverted = ai.data_to_midi_sequence(list(converted[0]))
-    print(unconverted)
     ai.make_midi_file(unconverted, "temp.mid")
     # notes = ai.guess(100)
     # notes = ai.data_to_midi_sequence(notes)

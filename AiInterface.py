@@ -86,7 +86,10 @@ class AiInterface:
         if checkpoint_num is not None:
             return os.path.join(self.check_dir, f"ckpt_{checkpoint_num}")
 
-        return tf.train.latest_checkpoint(self.check_dir)
+        ret = tf.train.latest_checkpoint(self.check_dir)
+        if ret is None:
+            print("here")
+        return ret
 
     @abstractmethod
     def midi_to_data(self, midi: mido.MidiFile, vocabs: list) -> (np.array, list): raise NotImplementedError
