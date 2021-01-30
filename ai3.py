@@ -9,6 +9,7 @@ import time
 import pickle
 from typing import Union
 import mido
+import random
 
 from AiInterface import AiInterface
 
@@ -22,7 +23,7 @@ except:
 
 
 TICKS_PER_BEAT = 512
-BATCH_SIZE = 256
+BATCH_SIZE = 128
 SEQ_LENGTH = 200
 
 class Ai3(AiInterface):
@@ -83,7 +84,7 @@ class Ai3(AiInterface):
                         length += time
                         ind -= 1
 
-        matrix_seq = [[0] * 128]
+        matrix_seq = [[-1] * 128]
         for i, event in enumerate(simple_seq[:-1]):
             note, time, length = event
             next_matrix = matrix_seq[-1][:]
@@ -158,33 +159,40 @@ class Ai3(AiInterface):
     def get_dataset(self) -> Union[np.array, tf.data.Dataset]:
         X, y = [], []
 
-        for file in os.listdir(self.data_dir):
-            file_name = os.fsdecode(file)
-            with(open(os.path.join(self.data_dir, file_name), "rb")) as f:
-                loaded = np.load(f)
-                X.append(loaded['arr_0'])
-                y.append(loaded['arr_1'])
+        files = os.listdir(self.data_dir)
+        for i in range(3):
+            random.shuffle(files)
+            for file in files:
+                file_name = os.fsdecode(file)
+                with(open(os.path.join(self.data_dir, file_name), "rb")) as f:
+                    loaded = np.load(f)
+                    X.append(loaded['arr_0'])
+                    y.append(loaded['arr_1'])
 
         X, y = np.vstack(X), np.vstack(y)
-
-        dataset = tf.data.Dataset.from_tensor_slices((X, {"notes": y[:, 0], "times": y[:, 1], "lengths": y[:, 2]}),
-                                                     )
+        print(f"X shape: {X.shape}, Num sequences: {X.shape[0]/SEQ_LENGTH}, Batches: {X.shape[0]/(SEQ_LENGTH*BATCH_SIZE)}")
+        dataset = tf.data.Dataset.from_tensor_slices((X, {"notes": y[:, 0], "times": y[:, 1], "lengths": y[:, 2]}))
         return dataset
 
     def build_model(self, batch_size) -> keras.Model:
         notes, times, lengths = self.vocabs
 
         inputs = keras.layers.Input(batch_shape=(batch_size, None, 128), batch_size=batch_size)
+        y = inputs
+        y = keras.layers.Dense(512, activation="tanh")(y)
 
-        embed_dim = 32
-        y = keras.layers.Embedding(2500, embed_dim, embeddings_regularizer="l2")(inputs)
-        y = keras.layers.Reshape((-1, embed_dim*128))(y)
-
-        # y = keras.layers.Dense(1024)(y)
-        # y = keras.layers.Activation("tanh")(y)
+        # embedding_dim = 1
+        # y = keras.layers.Embedding(2500, embedding_dim, mask_zero=False)(y)
+        # y = keras.layers.Reshape((-1, 128*embedding_dim))(y)
+        y = keras.layers.GRU(1024, stateful=True, return_sequences=True, return_state=True)(y)
+        y = keras.layers.GRU(1024, stateful=True, return_sequences=True, return_state=True)(y)
+        y = keras.layers.GRU(1024, stateful=True, return_sequences=True, return_state=False)(y)
+        # y = keras.layers.Dropout(0.4)(y)
+        # y = keras.layers.LSTM(512, stateful=True, return_sequences=True, return_state=True)(y)
+        # y = keras.layers.LSTM(512, stateful=True, return_sequences=True, return_state=True)(y)
+        # y = keras.layers.LSTM(512, stateful=True, return_sequences=True)(y)
         # y = keras.layers.Dropout(0.3)(y)
-        y = keras.layers.GRU(512, stateful=True, return_sequences=True, dropout=0.2, kernel_regularizer="l2")(y)
-        y = keras.layers.Dropout(0.3)(y)
+        # y = keras.layers.Dense(1024, activation="tanh")(y)
 
         y_1 = keras.layers.Dense(len(notes), name="notes")(y)
         y_2 = keras.layers.Dense(len(times), name="times")(y)
@@ -197,10 +205,8 @@ class Ai3(AiInterface):
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
         dataset = self.get_dataset()
         dataset = dataset.batch(SEQ_LENGTH, drop_remainder=True)
-        train_data = dataset.skip(600)\
-                    .batch(50).shuffle(5000, reshuffle_each_iteration=True).unbatch()\
-                    .batch(BATCH_SIZE, drop_remainder=True).repeat().prefetch(tf.data.experimental.AUTOTUNE)
-        test_data = dataset.take(600).batch(BATCH_SIZE, drop_remainder=True)
+        train_data = dataset.skip(BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True)#.take(1)
+        test_data = dataset.take(BATCH_SIZE).repeat(3).batch(BATCH_SIZE, drop_remainder=True)
 
         model = self.build_model(self.batch_size)
 
@@ -208,30 +214,30 @@ class Ai3(AiInterface):
         if cont:
             latest = self.get_checkpoint(checkpoint_num)
             if latest is not None:
-                ini_epoch = int(latest[17:])
+                ini_epoch = int(latest[18:])
                 model.load_weights(latest)
         else:
             AiInterface.remove_checkpoints(self.check_dir)
 
-        model.compile(optimizer=keras.optimizers.Adam(clipnorm=0.25),
+        model.compile(optimizer="adam",
                       loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
                       metrics="accuracy",)
         checkpoint_call_back = tf.keras.callbacks.ModelCheckpoint(self.check_dir+"/ckpt_{epoch}", save_weights_only=True)
 
         model.fit(train_data,
                   epochs=epochs + ini_epoch, initial_epoch=ini_epoch,
-                  callbacks=[self.get_scheduler(lr, cont=cont),
-                             checkpoint_call_back,
-                             self.loss_callback(),],
+                  callbacks=[checkpoint_call_back,
+                             self.loss_callback(),
+                             self.get_scheduler(lr, cont=cont),],
                   verbose=2,
                   validation_data=test_data,
                   validation_freq=3,
-                  steps_per_epoch=int(10000/BATCH_SIZE))
+                  )
 
         return model
 
     def parse_start(self, start):
-        return_seq = [[0]*128]
+        return_seq = [[-1]*128]
 
         for i, event in enumerate(start):
             note, time, length = event
@@ -239,13 +245,13 @@ class Ai3(AiInterface):
             next_matrix = [x - time if x - time > 0 else 0 for x in next_matrix]
             next_matrix[note] = max(next_matrix[note], length)
             return_seq.append(next_matrix)
-            start[i] = [self.vocabs[j][x] for j, x in enumerate(start[i])]
+            start[i] = [self.vocabs[j].index(x) for j, x in enumerate(start[i])]
 
         return return_seq, start
 
     def generate_text(self, model, num, start, temperature) -> list:
         vocabs = self.vocabs
-        input_eva, start = self.parse_start(start)
+        input_eval, start = self.parse_start(start)
         input_eval = np.array(input_eval, dtype=np.float32)  # Formatting the start string
         input_eval = tf.expand_dims(input_eval, 0)
 
@@ -283,8 +289,8 @@ class Ai3(AiInterface):
             model.load_weights(checkpoint).expect_partial()
 
         if start is None:
-            start = [[76, 0, TICKS_PER_BEAT], [72, 0, TICKS_PER_BEAT]]
-        model.build(tf.TensorShape([1, None, 4]))
+            start = [[76, 0, 1], [72, 0, 1]]
+        # model.build(tf.TensorShape([1, None, 128]))
         generated = self.generate_text(model, num, start, temp)
         return generated
 
