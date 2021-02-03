@@ -5,13 +5,13 @@ import mido
 import tensorflow as tf
 
 
-def make_midi(num, ai_obj, model=None, checkpoint_num=None):
+def make_midi(num, ai_obj, model=None, checkpoint_num=None, file="new.mid"):
     generated = ai_obj.guess(num=num,
-                             temp=1.1,
+                             temp=0.9,
                              model=model,
                              checkpoint_num=checkpoint_num)
     notes = ai.data_to_midi_sequence(generated)
-    ai_obj.make_midi_file(notes)
+    ai_obj.make_midi_file(notes, file)
 
 
 if __name__ == "__main__":

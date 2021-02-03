@@ -10,6 +10,8 @@ import pickle
 from typing import Union
 import mido
 import random
+import queue
+import threading
 
 from AiInterface import AiInterface
 
@@ -44,7 +46,8 @@ class Ai3Vels(AiInterface):
                         next_matrix[j + 1] = 0
 
             next_matrix[note * 2] = max(next_matrix[note * 2], length)
-            next_matrix[note * 2 + 1] = vel/128
+            if next_matrix[note*2] > 0:
+                next_matrix[note * 2 + 1] = vel/128
             matrix_seq.append(next_matrix)
         return matrix_seq
 
@@ -115,7 +118,7 @@ class Ai3Vels(AiInterface):
     def data_to_midi_sequence(self, sequence: list) -> list:
         for i, d in enumerate(sequence):
             sequence[i] = [self.vocabs[j][x] for j, x in enumerate(d)]
-
+        sequence = [x for x in sequence if -1 not in x]
         i = 0
         while i < len(sequence):
             data = sequence[i]
@@ -170,36 +173,56 @@ class Ai3Vels(AiInterface):
         return vocabs
 
     def get_dataset(self) -> Union[np.array, tf.data.Dataset]:
-        X, y = [], []
+        def load_file(file):
+            f = np.load(os.path.join(self.data_dir, file))
+            arr0, arr1 = f['arr_0'], f['arr_1']
+            f.close()
+            return arr0, arr1
 
-        files = os.listdir(self.data_dir)
-        for i in range(3):
-            random.shuffle(files)
-            for file in files:
+        def load_raw_data():
+            files_list = os.listdir(self.data_dir)
+            que = queue.Queue()
+            thread_count = 0
+            prev_file = None
+            while True:
+                file = random.choice(files_list)
+                while file == prev_file:
+                    file = random.choice(files_list)
                 file_name = os.fsdecode(file)
-                with(open(os.path.join(self.data_dir, file_name), "rb")) as f:
-                    loaded = np.load(f)
-                    X.append(loaded['arr_0'])
-                    y.append(loaded['arr_1'])
 
-        X, y = np.vstack(X), np.vstack(y)
-        print(f"X shape: {X.shape}, Num sequences: {X.shape[0]/SEQ_LENGTH}, Batches: {X.shape[0]/(SEQ_LENGTH*BATCH_SIZE)}")
-        dataset = tf.data.Dataset.from_tensor_slices((X, {"notes": y[:, 0], "vels": y[:, 1], "times": y[:, 2], "lengths": y[:, 3]}))
-        return dataset
+                if thread_count < 3:
+                    t = threading.Thread(target=lambda q, f: q.put(load_file(f)),
+                                         args=(que, file_name))
+                    t.start()
+                    thread_count += 1
+                try:
+                    X, y = que.get(block=False)
+                    thread_count -= 1
+                    yield X, {"notes": y[:, 0], "vels": y[:, 1], "times": y[:, 2], "lengths": y[:, 3]}
+                except queue.Empty:
+                    pass
+
+                prev_file = file
+
+        return tf.data.Dataset.from_generator(load_raw_data,
+                                              output_types=(tf.float64, {"notes": tf.int32, "vels": tf.int32, "times": tf.int32, "lengths": tf.int32}),
+                                              output_shapes=(tf.TensorShape((None, 256)),
+                                                             {"notes": ((None, )), "vels": ((None, )), "times": ((None, )), "lengths": ((None, ))})
+                                              ).unbatch()
 
     def build_model(self, batch_size) -> keras.Model:
         notes, vels, times, lengths = self.vocabs
 
         inputs = keras.layers.Input(batch_shape=(batch_size, None, 256), batch_size=batch_size)
         y = inputs
-        # y = keras.layers.Dense(512, activation="tanh")(y)
-
+        y = keras.layers.Dense(1024, activation="tanh")(y)
+        y = keras.layers.Dropout(0.2)(y)
         # embedding_dim = 1
         # y = keras.layers.Reshape((-1, 128*embedding_dim))(y)
         y = keras.layers.GRU(512, stateful=True, return_sequences=True)(y)
-        y = keras.layers.GRU(512, stateful=True, return_sequences=True)(y)
+        y = keras.layers.GRU(1024, stateful=True, return_sequences=True)(y)
         # y = keras.layers.GRU(1024, stateful=True, return_sequences=True, return_state=False)(y)
-        y = keras.layers.Dropout(0.4)(y)
+        y = keras.layers.Dropout(0.3)(y)
 
         y_1 = keras.layers.Dense(len(notes), name="notes")(y)
         y_2 = keras.layers.Dense(len(vels), name="vels")(y)
@@ -213,7 +236,7 @@ class Ai3Vels(AiInterface):
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
         dataset = self.get_dataset()
         dataset = dataset.batch(SEQ_LENGTH, drop_remainder=True)
-        train_data = dataset.skip(BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True)#.take(1)
+        train_data = dataset.skip(BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True).prefetch(tf.data.experimental.AUTOTUNE)
         test_data = dataset.take(BATCH_SIZE).repeat(3).batch(BATCH_SIZE, drop_remainder=True)
 
         model = self.build_model(self.batch_size)
@@ -230,7 +253,7 @@ class Ai3Vels(AiInterface):
         model.compile(optimizer="adam",
                       loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
                       metrics="accuracy",
-                      loss_weights=[7, 8, 1, 4],)
+                      loss_weights=[7, 14, 0.6, 4.5],)
         checkpoint_call_back = tf.keras.callbacks.ModelCheckpoint(self.check_dir+"/ckpt_{epoch}", save_weights_only=True)
 
         model.fit(train_data,
@@ -241,6 +264,7 @@ class Ai3Vels(AiInterface):
                   verbose=2,
                   validation_data=test_data,
                   validation_freq=3,
+                  steps_per_epoch=39,
                   )
 
         return model
@@ -256,13 +280,20 @@ class Ai3Vels(AiInterface):
         model.reset_states()
         for i in range(num):
             predictions = model(input_eval)
-            note_id, vel_id, time_id, length_id = tf.map_fn(lambda x: tf.random.categorical(
-                                                                      tf.squeeze(x, 0)/temperature,
-                                                                      num_samples=1).numpy()[-1, 0],
-                                                            predictions, fn_output_signature=tf.int32)
+            note_predict, vel_predict, time_predict, length_predict = predictions
+            note_predict, vel_predict, time_predict, length_predict = tf.squeeze(note_predict, 0), \
+                                                                      tf.squeeze(vel_predict, 0), \
+                                                                      tf.squeeze(time_predict,0),\
+                                                                      tf.squeeze(length_predict, 0)
+            note_predict, vel_predict, time_predict, length_predict = note_predict / temperature, vel_predict/temperature, \
+                                                                      time_predict / temperature, length_predict / temperature
+            note_id, vel_id, time_id, length_id = tf.random.categorical(note_predict, num_samples=1).numpy()[-1, 0], \
+                                                  tf.random.categorical(vel_predict, num_samples=1).numpy()[-1, 0], \
+                                                  tf.random.categorical(time_predict, num_samples=1).numpy()[-1, 0], \
+                                                  tf.random.categorical(length_predict, num_samples=1).numpy()[-1, 0]
 
             note, vel, time, length = vocabs[0][note_id], vocabs[1][vel_id], vocabs[2][time_id], vocabs[3][length_id]
-            input_eval = input_eval[0][-1]
+            input_eval = input_eval[0][-1].numpy()
 
             for j, x in enumerate(input_eval):
                 if j % 2 == 0:
@@ -278,12 +309,14 @@ class Ai3Vels(AiInterface):
             input_eval = np.array([input_eval])
             input_eval = tf.expand_dims(input_eval, 0)
 
-            add = [note_id, time_id, length_id]
+            add = [note_id, vel_id, time_id, length_id]
             if -1 not in add:
                 text_generated.append(add)
             else:
                 num += 1
 
+        for i, event in enumerate(start):
+            start[i] = [self.vocabs[j].index(x) for j, x in enumerate(event)]
         return start + text_generated
 
     def guess(self, num=10000, start=None, temp=0.8, model=None, checkpoint_num=None) -> list:
@@ -301,10 +334,13 @@ class Ai3Vels(AiInterface):
 if __name__ == "__main__":
     ai = Ai3Vels()
     # ai.process_all()
-    converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)[0]
-    notes = ai.data_to_midi_sequence(list(converted[1]))
-
+    print(ai.vocabs[1])
+    # for d in ai.get_dataset().take(1):
+    #     print(d[1]['vels'])
+    # converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)[0]
+    # notes = ai.data_to_midi_sequence(list(converted[1]))
     # ai.train(1, cont=False)
-    # notes = ai.guess(100)
-    # notes = ai.data_to_midi_sequence(notes)
+    notes = ai.guess(100)
+    notes = ai.data_to_midi_sequence(notes)
+    print(notes)
     ai.make_midi_file(notes, "temp.mid")

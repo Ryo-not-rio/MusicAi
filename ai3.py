@@ -297,7 +297,8 @@ if __name__ == "__main__":
     # converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)[0]
     # notes = ai.data_to_midi_sequence(list(converted[1]))
 
-    ai.train(1, cont=False)
+    print(ai.get_dataset())
+    # ai.train(1, cont=False)
     # notes = ai.guess(100)
     # notes = ai.data_to_midi_sequence(notes)
     # ai.make_midi_file(notes, "temp.mid")
