@@ -171,6 +171,7 @@ class Ai3(AiInterface):
                     y.append(loaded['arr_1'])
 
         X, y = np.vstack(X), np.vstack(y)
+        print(y)
         print(f"X shape: {X.shape}, Num sequences: {X.shape[0]/SEQ_LENGTH}, Batches: {X.shape[0]/(SEQ_LENGTH*BATCH_SIZE)}")
         dataset = tf.data.Dataset.from_tensor_slices((X, {"notes": y[:, 0], "times": y[:, 1], "lengths": y[:, 2]}))
         return dataset
@@ -297,7 +298,8 @@ if __name__ == "__main__":
     # converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)[0]
     # notes = ai.data_to_midi_sequence(list(converted[1]))
 
-    print(ai.get_dataset())
+    for d in ai.get_dataset().take(1):
+        print(d)
     # ai.train(1, cont=False)
     # notes = ai.guess(100)
     # notes = ai.data_to_midi_sequence(notes)

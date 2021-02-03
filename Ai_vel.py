@@ -33,7 +33,7 @@ class Ai(AiInterface):
     def midi_to_data(self, midi: mido.MidiFile, vocabs=None) -> (np.array, list):
         ticks_per_beat = midi.ticks_per_beat
         simple_seq = [[-1, -1, -1]]
-        vels = [-1]
+        vels = [0]
         offset = 0
 
         for i, msg in enumerate(mido.merge_tracks(midi.tracks)):
@@ -79,7 +79,7 @@ class Ai(AiInterface):
                         ind -= 1
 
         matrix_seq = [[-1] * 128]
-        for i, event in enumerate(simple_seq[:-1]):
+        for i, event in enumerate(simple_seq[1:]):
             note, time, length = event
             next_matrix = matrix_seq[-1][:]
             next_matrix = [x-time if x-time > 0 else 0 for x in next_matrix]
@@ -125,6 +125,7 @@ class Ai(AiInterface):
                     y += list(loaded['arr_1'])
 
         X, y = np.vstack(X), np.array(y)
+        print(X.shape, y.shape)
         print(f"X shape: {X.shape}, Num sequences: {X.shape[0]/SEQ_LENGTH}, Batches: {X.shape[0]/(SEQ_LENGTH*BATCH_SIZE)}")
         dataset = tf.data.Dataset.from_tensor_slices((X, y))
         return dataset
@@ -134,11 +135,10 @@ class Ai(AiInterface):
         y = inputs
         y = keras.layers.Dense(512, activation="tanh")(y)
 
-        y = keras.layers.GRU(512, stateful=True, return_sequences=True, return_state=True)(y)
-        y = keras.layers.GRU(512, stateful=True, return_sequences=True, return_state=False)(y)
-        y = keras.layers.Dropout(0.4)(y)
+        y = keras.layers.GRU(512, stateful=True, return_sequences=True)(y)
+        y = keras.layers.GRU(512, stateful=True, return_sequences=True)(y)
 
-        y_1 = keras.layers.Dense(127)(y)
+        y_1 = keras.layers.Dense(128)(y)
 
         m = keras.Model(inputs=inputs, outputs=y_1)
         # m.summary()
@@ -147,7 +147,7 @@ class Ai(AiInterface):
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
         dataset = self.get_dataset()
         dataset = dataset.batch(SEQ_LENGTH, drop_remainder=True)
-        train_data = dataset.skip(BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True)#.take(1)
+        train_data = dataset.skip(BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True)
         test_data = dataset.take(BATCH_SIZE).repeat(3).batch(BATCH_SIZE, drop_remainder=True)
 
         model = self.build_model(self.batch_size)
@@ -156,7 +156,7 @@ class Ai(AiInterface):
         if cont:
             latest = self.get_checkpoint(checkpoint_num)
             if latest is not None:
-                ini_epoch = int(latest[self.check_dir+6:])
+                ini_epoch = int(latest[len(self.check_dir)+6:])
                 model.load_weights(latest)
         else:
             AiInterface.remove_checkpoints(self.check_dir)
@@ -183,16 +183,16 @@ class Ai(AiInterface):
         if model is None:
             model = self.build_model(1)
             model.load_weights(checkpoint).expect_partial()
+            model.reset_states()
 
         input_eval = np.array(matrix, dtype=np.float32)  # Formatting the start string
-        input_eval = tf.expand_dims(input_eval, 0)
+        input_eval = tf.expand_dims([input_eval], 0)
 
-        model.reset_states()
         prediction = model(input_eval)
         prediction = tf.squeeze(prediction, 0) / temperature
         prediction = tf.random.categorical(prediction, num_samples=1).numpy()[-1, 0]
 
-        return prediction
+        return prediction, model
 
     def parse_start(self, start):
         raise Exception("This model does not support this operation")
@@ -205,11 +205,16 @@ class Ai(AiInterface):
 
 if __name__ == "__main__":
     ai = Ai()
-    # ai.process_all()
+    ai.process_all()
     # converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"))
-    dataset = ai.get_dataset()
-    for d in dataset.take(1):
-        print(d)
 
-    # ai.train(1, cont=False)
+    # try_data = np.zeros((1, 200, 128), dtype=np.float32)
+    # model = ai.build_model(1)
+    # print(model(try_data))
+    # prediction = ai.predict_vel(try_data, 1.0)
+
+    # for d in ai.get_dataset().take(1):
+    #     print(d)
+
+    ai.train(100, cont=False)
 
