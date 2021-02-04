@@ -79,12 +79,13 @@ class Ai(AiInterface):
                         ind -= 1
 
         matrix_seq = [[-1] * 128]
-        for i, event in enumerate(simple_seq[1:]):
+        for i, event in enumerate(simple_seq):
             note, time, length = event
             next_matrix = matrix_seq[-1][:]
             next_matrix = [x-time if x-time > 0 else 0 for x in next_matrix]
             next_matrix[note] = max(next_matrix[note], length)
-            matrix_seq.append(next_matrix)
+            if i > 0:
+                matrix_seq.append(next_matrix)
 
         return [np.array(matrix_seq), np.array(vels)]
 
@@ -125,7 +126,6 @@ class Ai(AiInterface):
                     y += list(loaded['arr_1'])
 
         X, y = np.vstack(X), np.array(y)
-        print(X.shape, y.shape)
         print(f"X shape: {X.shape}, Num sequences: {X.shape[0]/SEQ_LENGTH}, Batches: {X.shape[0]/(SEQ_LENGTH*BATCH_SIZE)}")
         dataset = tf.data.Dataset.from_tensor_slices((X, y))
         return dataset
@@ -135,8 +135,11 @@ class Ai(AiInterface):
         y = inputs
         y = keras.layers.Dense(512, activation="tanh")(y)
 
-        y = keras.layers.GRU(512, stateful=True, return_sequences=True)(y)
-        y = keras.layers.GRU(512, stateful=True, return_sequences=True)(y)
+        y = keras.layers.Dropout(0.1)(y)
+        y = keras.layers.GRU(1024, stateful=True, return_sequences=True)(y)
+        y = keras.layers.GRU(1024, stateful=True, return_sequences=True)(y)
+        y = keras.layers.GRU(1024, stateful=True, return_sequences=True)(y)
+        y = keras.layers.Dropout(0.3)(y)
 
         y_1 = keras.layers.Dense(128)(y)
 
@@ -178,19 +181,15 @@ class Ai(AiInterface):
 
         return model
 
-    def predict_vel(self, matrix, temperature, model=None, checkpoint_num=None):
-        checkpoint = self.get_checkpoint(checkpoint_num)
-        if model is None:
-            model = self.build_model(1)
-            model.load_weights(checkpoint).expect_partial()
-            model.reset_states()
-
+    @staticmethod
+    def predict_vel(matrix, temperature, model):
         input_eval = np.array(matrix, dtype=np.float32)  # Formatting the start string
         input_eval = tf.expand_dims([input_eval], 0)
 
         prediction = model(input_eval)
-        prediction = tf.squeeze(prediction, 0) / temperature
-        prediction = tf.random.categorical(prediction, num_samples=1).numpy()[-1, 0]
+        input_eval = tf.squeeze(prediction)
+        prediction = input_eval / temperature
+        prediction = tf.random.categorical([prediction], num_samples=1).numpy()[-1, 0]
 
         return prediction, model
 
@@ -205,7 +204,7 @@ class Ai(AiInterface):
 
 if __name__ == "__main__":
     ai = Ai()
-    ai.process_all()
+    # ai.process_all()
     # converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"))
 
     # try_data = np.zeros((1, 200, 128), dtype=np.float32)

@@ -12,6 +12,7 @@ import mido
 import random
 
 from AiInterface import AiInterface
+import Ai_vel
 
 try:
     physical_devices = tf.config.list_physical_devices('GPU')
@@ -98,11 +99,15 @@ class Ai3(AiInterface):
 
         return [np.array(matrix_seq), np.array(simple_seq)], vocabs
 
-    def data_to_midi_sequence(self, sequence: list) -> list:
-        for i, d in enumerate(sequence):
-            sequence[i] = [self.vocabs[j][x] for j, x in enumerate(d)]
+    def data_to_midi_sequence(self, sequence: list, vocabs=None) -> list:
+        if vocabs is None:
+            vocabs = self.vocabs
 
-        sequence = [[x[0], 80, x[1], x[2]] for x in sequence if -1 not in x]
+        for i, d in enumerate(sequence):
+            note, vel, time, length = sequence[i]
+            sequence[i] = [vocabs[0][note], vel, vocabs[1][time], vocabs[2][length]]
+
+        sequence = [x for x in sequence if -1 not in x]
         i = 0
         while i < len(sequence):
             data = sequence[i]
@@ -234,32 +239,39 @@ class Ai3(AiInterface):
 
         return model
 
-    def parse_start(self, start):
+    def parse_start(self, start, vocabs=None):
+        if vocabs is None:
+            vocabs = self.vocabs
         return_seq = [[-1]*128]
 
         for i, event in enumerate(start):
-            note, time, length = event
+            note, vel, time, length = event
             next_matrix = return_seq[-1][:]
             next_matrix = [x - time if x - time > 0 else 0 for x in next_matrix]
             next_matrix[note] = max(next_matrix[note], length)
             return_seq.append(next_matrix)
-            start[i] = [self.vocabs[j].index(x) for j, x in enumerate(start[i])]
+            start[i] = [vocabs[0].index(note), vel, vocabs[1].index(time), vocabs[2].index(length)]
 
         return return_seq, start
 
-    def generate_text(self, model, num, start, temperature) -> list:
-        vocabs = self.vocabs
-        input_eval, start = self.parse_start(start)
+    def generate_text(self, model, num, start, temperature, vel_model=None, vocabs=None) -> list:
+        if vocabs is None:
+            vocabs = self.vocabs
+        input_eval, start = self.parse_start(start, vocabs=vocabs)
         input_eval = np.array(input_eval, dtype=np.float32)  # Formatting the start string
         input_eval = tf.expand_dims(input_eval, 0)
 
         text_generated = []
 
+        if vel_model is not None:
+            vel_model.reset_states()
+            _, vel_model = Ai_vel.Ai.predict_vel([-1]*128, temperature, vel_model)
+
         model.reset_states()
         for i in range(num):
             predictions = model(input_eval)
             note_predict, time_predict, length_predict = predictions
-            note_predict, time_predict, length_predict = tf.squeeze(note_predict, 0),tf.squeeze(time_predict, 0), tf.squeeze(length_predict, 0)
+            note_predict, time_predict, length_predict = tf.squeeze(note_predict, 0), tf.squeeze(time_predict, 0), tf.squeeze(length_predict, 0)
             note_predict, time_predict, length_predict = note_predict / temperature, time_predict / temperature, length_predict / temperature
             note_id, time_id, length_id = tf.random.categorical(note_predict, num_samples=1).numpy()[-1, 0], \
                                                     tf.random.categorical(time_predict, num_samples=1).numpy()[-1, 0], \
@@ -272,7 +284,12 @@ class Ai3(AiInterface):
             input_eval = np.array([input_eval])
             input_eval = tf.expand_dims(input_eval, 0)
 
-            add = [note_id, time_id, length_id]
+            if vel_model is not None:
+                vel, vel_model = Ai_vel.Ai.predict_vel(tf.squeeze(input_eval), temperature, vel_model)
+            else:
+                vel = 80
+
+            add = [note_id, vel, time_id, length_id]
             if -1 not in add:
                 text_generated.append(add)
             else:
@@ -280,16 +297,16 @@ class Ai3(AiInterface):
 
         return start + text_generated
 
-    def guess(self, num=10000, start=None, temp=0.8, model=None, checkpoint_num=None) -> list:
+    def guess(self, num=10000, start=None, temp=0.8, model=None, checkpoint_num=None, vel_model=None, vocabs=None) -> list:
         checkpoint = self.get_checkpoint(checkpoint_num)
         if model is None:
             model = self.build_model(1)
             model.load_weights(checkpoint).expect_partial()
 
         if start is None:
-            start = [[76, 0, 1], [72, 0, 1]]
+            start = [[76, 80, 0, 1], [72, 80, 0, 1]]
         # model.build(tf.TensorShape([1, None, 128]))
-        generated = self.generate_text(model, num, start, temp)
+        generated = self.generate_text(model, num, start, temp, vel_model, vocabs=vocabs)
         return generated
 
 if __name__ == "__main__":
