@@ -33,7 +33,7 @@ def split_input(chunk):
     return chunk[:-1], chunk[1:]
 
 
-class MatrixAi(AiInterface):
+class Ai(AiInterface):
     def __init__(self):
         super().__init__("./checkpoints2", "data2", "ai2_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
 
@@ -356,7 +356,7 @@ class MatrixAi(AiInterface):
 
 
 if __name__ == "__main__":
-    ai = MatrixAi()
+    ai = Ai()
     ai.process_all()
 
     # converted, vocabs = ai.midi_to_data(mido.MidiFile("./midis/alb_esp1.mid"), [])

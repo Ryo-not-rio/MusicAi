@@ -28,7 +28,7 @@ TICKS_PER_BEAT = 512
 BATCH_SIZE = 128
 SEQ_LENGTH = 200
 
-class Ai3Vels(AiInterface):
+class Ai(AiInterface):
     def __init__(self):
         super().__init__("checkpoints3_vels", "data3_vels", "ai3_vels_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
 
@@ -332,7 +332,7 @@ class Ai3Vels(AiInterface):
         return generated
 
 if __name__ == "__main__":
-    ai = Ai3Vels()
+    ai = Ai()
     # ai.process_all()
     print(ai.vocabs[1])
     # for d in ai.get_dataset().take(1):

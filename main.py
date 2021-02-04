@@ -1,9 +1,9 @@
-import ai2_classed
-import ai1_classed
-import ai3
-import ai3_with_vel
+import Ai2
+import Ai1
+import Ai3
+import Ai3WithVels
 import mido
-import Ai_vel
+import AiVel
 from tensorflow import keras as keras
 import pickle
 
@@ -26,7 +26,7 @@ def make_midi(num, ai_obj, model=None, checkpoint_num=None, vel_model=None, voca
 
 
 if __name__ == "__main__":
-    ai = ai3.Ai3()
+    ai = Ai3.Ai()
     # ai.process_all()
     # converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)
     # print(converted)

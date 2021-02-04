@@ -12,6 +12,7 @@ import mido
 import random
 
 from AiInterface import AiInterface
+import Ai_vel
 
 try:
     physical_devices = tf.config.list_physical_devices('GPU')
@@ -26,7 +27,7 @@ TICKS_PER_BEAT = 512
 BATCH_SIZE = 128
 SEQ_LENGTH = 200
 
-class Ai3(AiInterface):
+class Ai(AiInterface):
     def __init__(self):
         super().__init__("checkpoints3", "data3", "ai3_vocab.pkl", BATCH_SIZE, TICKS_PER_BEAT)
 
@@ -46,7 +47,8 @@ class Ai3(AiInterface):
                 if vel != 0:
                     if note not in vocabs[0]:
                         vocabs[0].append(note)
-                        time = round(time, 6)
+
+                    time = round(time, 6)
                     if time not in vocabs[1]:
                         vocabs[1].append(time)
                     simple_seq.append([note, time, 0])
@@ -84,7 +86,7 @@ class Ai3(AiInterface):
                         length += time
                         ind -= 1
 
-        matrix_seq = [[0] * 128]
+        matrix_seq = [[-1] * 128]
         for i, event in enumerate(simple_seq[:-1]):
             note, time, length = event
             next_matrix = matrix_seq[-1][:]
@@ -97,11 +99,15 @@ class Ai3(AiInterface):
 
         return [np.array(matrix_seq), np.array(simple_seq)], vocabs
 
-    def data_to_midi_sequence(self, sequence: list) -> list:
-        for i, d in enumerate(sequence):
-            sequence[i] = [self.vocabs[j][x] for j, x in enumerate(d)]
+    def data_to_midi_sequence(self, sequence: list, vocabs=None) -> list:
+        if vocabs is None:
+            vocabs = self.vocabs
 
-        sequence = [[x[0], 80, x[1], x[2]] for x in sequence if -1 not in x]
+        for i, d in enumerate(sequence):
+            note, vel, time, length = sequence[i]
+            sequence[i] = [vocabs[0][note], vel, vocabs[1][time], vocabs[2][length]]
+
+        sequence = [x for x in sequence if -1 not in x]
         i = 0
         while i < len(sequence):
             data = sequence[i]
@@ -170,6 +176,7 @@ class Ai3(AiInterface):
                     y.append(loaded['arr_1'])
 
         X, y = np.vstack(X), np.vstack(y)
+        print(y)
         print(f"X shape: {X.shape}, Num sequences: {X.shape[0]/SEQ_LENGTH}, Batches: {X.shape[0]/(SEQ_LENGTH*BATCH_SIZE)}")
         dataset = tf.data.Dataset.from_tensor_slices((X, {"notes": y[:, 0], "times": y[:, 1], "lengths": y[:, 2]}))
         return dataset
@@ -179,17 +186,15 @@ class Ai3(AiInterface):
 
         inputs = keras.layers.Input(batch_shape=(batch_size, None, 128), batch_size=batch_size)
         y = inputs
+        y = keras.layers.Dense(512, activation="tanh")(y)
 
         # embedding_dim = 1
         # y = keras.layers.Embedding(2500, embedding_dim, mask_zero=False)(y)
         # y = keras.layers.Reshape((-1, 128*embedding_dim))(y)
-        y = keras.layers.GRU(512, stateful=True, return_sequences=True, return_state=False)(y)
-        # y = keras.layers.Dropout(0.4)(y)
-        # y = keras.layers.LSTM(512, stateful=True, return_sequences=True, return_state=True)(y)
-        # y = keras.layers.LSTM(512, stateful=True, return_sequences=True, return_state=True)(y)
-        # y = keras.layers.LSTM(512, stateful=True, return_sequences=True)(y)
-        # y = keras.layers.Dropout(0.3)(y)
-        # y = keras.layers.Dense(1024, activation="tanh")(y)
+        y = keras.layers.GRU(1024, stateful=True, return_sequences=True, return_state=True)(y)
+        y = keras.layers.GRU(1024, stateful=True, return_sequences=True, return_state=False)(y)
+        # y = keras.layers.GRU(1024, stateful=True, return_sequences=True, return_state=False)(y)
+        y = keras.layers.Dropout(0.4)(y)
 
         y_1 = keras.layers.Dense(len(notes), name="notes")(y)
         y_2 = keras.layers.Dense(len(times), name="times")(y)
@@ -202,7 +207,7 @@ class Ai3(AiInterface):
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
         dataset = self.get_dataset()
         dataset = dataset.batch(SEQ_LENGTH, drop_remainder=True)
-        train_data = dataset.skip(BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True).take(1)
+        train_data = dataset.skip(BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True)#.take(1)
         test_data = dataset.take(BATCH_SIZE).repeat(3).batch(BATCH_SIZE, drop_remainder=True)
 
         model = self.build_model(self.batch_size)
@@ -211,20 +216,22 @@ class Ai3(AiInterface):
         if cont:
             latest = self.get_checkpoint(checkpoint_num)
             if latest is not None:
-                ini_epoch = int(latest[17:])
+                ini_epoch = int(latest[18:])
                 model.load_weights(latest)
         else:
             AiInterface.remove_checkpoints(self.check_dir)
 
         model.compile(optimizer="adam",
                       loss=keras.losses.SparseCategoricalCrossentropy(from_logits=True, name="loss"),
-                      metrics="accuracy",)
+                      metrics="accuracy",
+                      loss_weights=[5, 1, 3],)
         checkpoint_call_back = tf.keras.callbacks.ModelCheckpoint(self.check_dir+"/ckpt_{epoch}", save_weights_only=True)
 
         model.fit(train_data,
                   epochs=epochs + ini_epoch, initial_epoch=ini_epoch,
                   callbacks=[checkpoint_call_back,
-                             self.loss_callback(),],
+                             self.loss_callback(),
+                             self.get_scheduler(lr, cont=cont),],
                   verbose=2,
                   validation_data=test_data,
                   validation_freq=3,
@@ -232,32 +239,39 @@ class Ai3(AiInterface):
 
         return model
 
-    def parse_start(self, start):
-        return_seq = [[0]*128]
+    def parse_start(self, start, vocabs=None):
+        if vocabs is None:
+            vocabs = self.vocabs
+        return_seq = [[-1]*128]
 
         for i, event in enumerate(start):
-            note, time, length = event
+            note, vel, time, length = event
             next_matrix = return_seq[-1][:]
             next_matrix = [x - time if x - time > 0 else 0 for x in next_matrix]
             next_matrix[note] = max(next_matrix[note], length)
             return_seq.append(next_matrix)
-            start[i] = [self.vocabs[j].index(x) for j, x in enumerate(start[i])]
+            start[i] = [vocabs[0].index(note), vel, vocabs[1].index(time), vocabs[2].index(length)]
 
         return return_seq, start
 
-    def generate_text(self, model, num, start, temperature) -> list:
-        vocabs = self.vocabs
-        input_eval, start = self.parse_start(start)
+    def generate_text(self, model, num, start, temperature, vel_model=None, vocabs=None) -> list:
+        if vocabs is None:
+            vocabs = self.vocabs
+        input_eval, start = self.parse_start(start, vocabs=vocabs)
         input_eval = np.array(input_eval, dtype=np.float32)  # Formatting the start string
         input_eval = tf.expand_dims(input_eval, 0)
 
         text_generated = []
 
+        if vel_model is not None:
+            vel_model.reset_states()
+            _, vel_model = Ai_vel.Ai.predict_vel([-1]*128, temperature, vel_model)
+
         model.reset_states()
         for i in range(num):
             predictions = model(input_eval)
             note_predict, time_predict, length_predict = predictions
-            note_predict, time_predict, length_predict = tf.squeeze(note_predict, 0),tf.squeeze(time_predict, 0), tf.squeeze(length_predict, 0)
+            note_predict, time_predict, length_predict = tf.squeeze(note_predict, 0), tf.squeeze(time_predict, 0), tf.squeeze(length_predict, 0)
             note_predict, time_predict, length_predict = note_predict / temperature, time_predict / temperature, length_predict / temperature
             note_id, time_id, length_id = tf.random.categorical(note_predict, num_samples=1).numpy()[-1, 0], \
                                                     tf.random.categorical(time_predict, num_samples=1).numpy()[-1, 0], \
@@ -270,7 +284,12 @@ class Ai3(AiInterface):
             input_eval = np.array([input_eval])
             input_eval = tf.expand_dims(input_eval, 0)
 
-            add = [note_id, time_id, length_id]
+            if vel_model is not None:
+                vel, vel_model = Ai_vel.Ai.predict_vel(tf.squeeze(input_eval), temperature, vel_model)
+            else:
+                vel = 80
+
+            add = [note_id, vel, time_id, length_id]
             if -1 not in add:
                 text_generated.append(add)
             else:
@@ -278,25 +297,27 @@ class Ai3(AiInterface):
 
         return start + text_generated
 
-    def guess(self, num=10000, start=None, temp=0.8, model=None, checkpoint_num=None) -> list:
+    def guess(self, num=10000, start=None, temp=0.8, model=None, checkpoint_num=None, vel_model=None, vocabs=None) -> list:
         checkpoint = self.get_checkpoint(checkpoint_num)
         if model is None:
             model = self.build_model(1)
             model.load_weights(checkpoint).expect_partial()
 
         if start is None:
-            start = [[76, 0, 1], [72, 0, 1]]
+            start = [[76, 80, 0, 1], [72, 80, 0, 1]]
         # model.build(tf.TensorShape([1, None, 128]))
-        generated = self.generate_text(model, num, start, temp)
+        generated = self.generate_text(model, num, start, temp, vel_model, vocabs=vocabs)
         return generated
 
 if __name__ == "__main__":
-    ai = Ai3()
+    ai = Ai()
     # ai.process_all()
     # converted = ai.midi_to_data(mido.MidiFile("midis/alb_esp1.mid"), ai.vocabs)[0]
     # notes = ai.data_to_midi_sequence(list(converted[1]))
 
-    ai.train(1, cont=False)
+    for d in ai.get_dataset().take(1):
+        print(d)
+    # ai.train(1, cont=False)
     # notes = ai.guess(100)
     # notes = ai.data_to_midi_sequence(notes)
     # ai.make_midi_file(notes, "temp.mid")
