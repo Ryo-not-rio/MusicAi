@@ -12,7 +12,7 @@ import mido
 import random
 
 from AiInterface import AiInterface
-import Ai_vel
+import AiVel
 
 try:
     physical_devices = tf.config.list_physical_devices('GPU')
@@ -133,7 +133,6 @@ class Ai(AiInterface):
             sequence[i] = [round(x) for x in item]
 
         return sequence
-
 
     def process_all(self, midi_dir: str = "midis") -> list:
         print("Processing midis...")

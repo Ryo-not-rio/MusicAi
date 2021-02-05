@@ -19,21 +19,19 @@ try:
 except:
     print("No GPU")
 
+
 BATCH_SIZE = 128
-SEQ_LENGTH = 200
+SEQ_LENGTH = 400
 
 class Ai(Interface):
     def __init__(self):
-        super().__init__("vel_checkpoints", "vel_data3", BATCH_SIZE)
+        super().__init__("encoder_checkpoints", "note_time_length", BATCH_SIZE)
         self.loss = -1
         self.prev_loss = 100
-        if not os.path.exists(self.data_dir):
-            os.makedirs(self.data_dir)
 
     def midi_to_data(self, midi: mido.MidiFile) -> (np.array, list):
         ticks_per_beat = midi.ticks_per_beat
         simple_seq = [[-1, -1, -1]]
-        vels = [0]
         offset = 0
 
         for i, msg in enumerate(mido.merge_tracks(midi.tracks)):
@@ -45,7 +43,6 @@ class Ai(Interface):
                 if vel != 0:
                     time = round(time, 6)
                     simple_seq.append([note, time, 0])
-                    vels.append(vel)
                     offset = 0
 
                 else:
@@ -87,7 +84,7 @@ class Ai(Interface):
             if i > 0:
                 matrix_seq.append(next_matrix)
 
-        return [np.array(matrix_seq), np.array(vels)]
+        return np.array(matrix_seq)
 
     def process_all(self, midi_dir: str = "midis") -> None:
         print("Processing midis...")
@@ -101,13 +98,22 @@ class Ai(Interface):
             data = self.midi_to_data(mid)
 
             with open(os.path.join(self.data_dir, os.path.split(file)[-1][:-3] + "npz"), "wb") as f:
-                np.savez_compressed(f, data[0], data[1])
+                np.savez_compressed(f, data)
 
         print("processed all midi files.")
         print("time_taken: ", time.time()-start)
 
     def get_dataset(self) -> Union[np.array, tf.data.Dataset]:
-        X, y = [], []
+        def parse(array):
+            if array.shape[0] < SEQ_LENGTH:
+                return [np.concatenate((array, np.tile([0, 0, 0], SEQ_LENGTH-array.shape[0])), axis=-1)]
+            else:
+                return_list = []
+                for i in range(array.shape[0]//SEQ_LENGTH):
+                    return_list.append(array[i*SEQ_LENGTH:i*SEQ_LENGTH+SEQ_LENGTH])
+                return return_list
+
+        X = []
 
         files = os.listdir(self.data_dir)
         for i in range(3):
@@ -116,38 +122,40 @@ class Ai(Interface):
                 file_name = os.fsdecode(file)
                 with(open(os.path.join(self.data_dir, file_name), "rb")) as f:
                     loaded = np.load(f)
-                    X.append(loaded['arr_0'])
-                    y += list(loaded['arr_1'])
+                    data = loaded['arr_0']
+                    X += parse(data)
 
-        X, y = np.vstack(X), np.array(y)
+        X = np.vstack(X)
         print(f"X shape: {X.shape}, Num sequences: {X.shape[0]/SEQ_LENGTH}, Batches: {X.shape[0]/(SEQ_LENGTH*BATCH_SIZE)}")
-        dataset = tf.data.Dataset.from_tensor_slices((X, y))
+        dataset = tf.data.Dataset.from_tensor_slices((X, X))
         return dataset
 
-    def build_model(self, batch_size) -> keras.Model:
-        inputs = keras.layers.Input(batch_shape=(batch_size, None, 128), batch_size=batch_size)
-        y = inputs
-        y = keras.layers.Dense(512, activation="tanh")(y)
-
-        y = keras.layers.Dropout(0.1)(y)
-        y = keras.layers.GRU(1024, stateful=True, return_sequences=True)(y)
-        y = keras.layers.GRU(1024, stateful=True, return_sequences=True)(y)
-        y = keras.layers.GRU(1024, stateful=True, return_sequences=True)(y)
-        y = keras.layers.Dropout(0.3)(y)
-
-        y_1 = keras.layers.Dense(128)(y)
-
-        m = keras.Model(inputs=inputs, outputs=y_1)
-        # m.summary()
+    def build_encoder(self) -> keras.Model:
+        m = keras.Sequential([
+            keras.layers.Input(shape=(SEQ_LENGTH, 128,)),
+            keras.layers.Flatten(),
+            keras.layers.Dense(128, activation="relu")
+        ])
         return m
+
+    def build_decoder(self) -> keras.Model:
+        m = keras.Sequential([
+            keras.layers.Dense(SEQ_LENGTH*3, activation="tanh")
+        ])
+        return m
+
+    def build_model(self, batch_size=None):
+        encoder = self.build_encoder()
+        decoder = self.build_decoder()
+        auto_encoder = keras.models.Model(encoder.layers[0], decoder.layers[-1])
+        return auto_encoder
 
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
         dataset = self.get_dataset()
-        dataset = dataset.batch(SEQ_LENGTH, drop_remainder=True)
         train_data = dataset.skip(BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True)
         test_data = dataset.take(BATCH_SIZE).repeat(3).batch(BATCH_SIZE, drop_remainder=True)
 
-        model = self.build_model(self.batch_size)
+        model = self.build_model()
 
         ini_epoch = 0
         if cont:
@@ -174,18 +182,6 @@ class Ai(Interface):
                   )
 
         return model
-
-    @staticmethod
-    def predict_vel(matrix, temperature, model):
-        input_eval = np.array(matrix, dtype=np.float32)  # Formatting the start string
-        input_eval = tf.expand_dims([input_eval], 0)
-
-        prediction = model(input_eval)
-        input_eval = tf.squeeze(prediction)
-        prediction = input_eval / temperature
-        prediction = tf.random.categorical([prediction], num_samples=1).numpy()[-1, 0]
-
-        return prediction, model
 
 if __name__ == "__main__":
     ai = Ai()

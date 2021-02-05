@@ -9,28 +9,17 @@ import mido
 import numpy as np
 from typing import Union
 import time
+from basicAiInterface import Interface
 
 
-class AiInterface:
+class AiInterface(Interface):
     __metaclass__ = ABCMeta
 
-    @staticmethod
-    def remove_checkpoints(dir):
-        try:
-            shutil.rmtree(dir)
-        except OSError as e:
-            print("Error: %s : %s" % (dir, e.strerror))
-
     def __init__(self, check_dir: str, data_dir: str, vocab_file: str, batch_size: int, ticks_per_beat: int) -> None:
-        self.check_dir = check_dir
-        self.data_dir = data_dir
-        self.batch_size = batch_size
+        super().__init__(check_dir, data_dir, batch_size)
         self.ticks_per_beat = ticks_per_beat
-        self.loss = -1
-        self.prev_loss = 100
         self.vocab_file = vocab_file
-        if not os.path.exists(data_dir):
-            os.makedirs(data_dir)
+
         try:
             with open(vocab_file, "rb") as f:
                 self.vocabs = pickle.load(f)
@@ -53,43 +42,6 @@ class AiInterface:
 
         new_mid.save(file)
         print("successfully saved midi file")
-
-    def loss_callback(self):
-        return self.LossCallback(self)
-
-    # noinspection PyMissingConstructor
-    class LossCallback(keras.callbacks.Callback):
-        def __init__(self, outer_class):
-            super(outer_class.LossCallback, self).__init__()
-            self.outer = outer_class
-
-        def on_epoch_end(self, epoch, logs=None):
-            self.outer.loss = logs['loss']
-
-    def get_scheduler(self, ini_lr: float, cont: bool) -> keras.callbacks.LearningRateScheduler:
-        def schedule(epoch: int, l_r: float):
-            limit = 0.015 * (1 / 3) ** (log(l_r / ini_lr) / log(0.5))
-            if self.prev_loss == -1:
-                if not cont:
-                    l_r = ini_lr
-            elif self.prev_loss - self.loss < limit:
-                l_r *= 1 / 2
-                limit *= 1 / 2
-            self.prev_loss = self.loss
-
-            print("Learning rate:", l_r)
-            return l_r
-
-        return keras.callbacks.LearningRateScheduler(schedule)
-
-    def get_checkpoint(self, checkpoint_num: int) -> str:
-        if checkpoint_num is not None:
-            return os.path.join(self.check_dir, f"ckpt_{checkpoint_num}")
-
-        ret = tf.train.latest_checkpoint(self.check_dir)
-        if ret is None:
-            print("here")
-        return ret
 
     @abstractmethod
     def midi_to_data(self, midi: mido.MidiFile, vocabs: list) -> (np.array, list): raise NotImplementedError
