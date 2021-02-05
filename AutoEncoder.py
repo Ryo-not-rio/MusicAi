@@ -9,7 +9,10 @@ import time
 from typing import Union
 import mido
 import random
+import pickle
+
 from basicAiInterface import Interface
+
 
 try:
     physical_devices = tf.config.list_physical_devices('GPU')
@@ -20,16 +23,27 @@ except:
     print("No GPU")
 
 
-BATCH_SIZE = 128
-SEQ_LENGTH = 400
+BATCH_SIZE = 64
+SEQ_LENGTH = 10
+ENCODER_DIM = 64
 
 class Ai(Interface):
     def __init__(self):
-        super().__init__("encoder_checkpoints", "note_time_length", BATCH_SIZE)
+        self.vocab_file = "encoder.pkl"
+        super().__init__("encoder_checkpoints", "encoder", BATCH_SIZE)
         self.loss = -1
         self.prev_loss = 100
 
-    def midi_to_data(self, midi: mido.MidiFile) -> (np.array, list):
+
+        try:
+            with open(self.vocab_file, "rb") as f:
+                self.vocabs = pickle.load(f)
+        except FileNotFoundError:
+            self.process_all()  # Sets self.vocabs
+
+    def midi_to_data(self, midi: mido.MidiFile, vocabs: list) -> (np.array, list):
+        if not vocabs:
+            vocabs = [[-1], [-1], [-1, 0]]
         ticks_per_beat = midi.ticks_per_beat
         simple_seq = [[-1, -1, -1]]
         offset = 0
@@ -41,7 +55,12 @@ class Ai(Interface):
                 time = msg.time / ticks_per_beat + offset
 
                 if vel != 0:
+                    if note not in vocabs[0]:
+                        vocabs[0].append(note)
+
                     time = round(time, 6)
+                    if time not in vocabs[1]:
+                        vocabs[1].append(time)
                     simple_seq.append([note, time, 0])
                     offset = 0
 
@@ -56,6 +75,8 @@ class Ai(Interface):
                     def update_length(last_length):
                         length = last_length
                         length = round(length, 5)
+                        if length not in vocabs[2]:
+                            vocabs[2].append(length)
                         simple_seq[change_ind][2] = length
 
                     while ind >= 0:
@@ -79,34 +100,47 @@ class Ai(Interface):
         for i, event in enumerate(simple_seq):
             note, time, length = event
             next_matrix = matrix_seq[-1][:]
-            next_matrix = [x-time if x-time > 0 else 0 for x in next_matrix]
+            next_matrix = [x - time if x - time > 0 else 0 for x in next_matrix]
             next_matrix[note] = max(next_matrix[note], length)
             if i > 0:
                 matrix_seq.append(next_matrix)
 
-        return np.array(matrix_seq)
+        for i, event in enumerate(simple_seq):
+            simple_seq[i] = [vocabs[j].index(x) for j, x in enumerate(event)]
 
-    def process_all(self, midi_dir: str = "midis") -> None:
+        return [np.array(matrix_seq), np.array(simple_seq)], vocabs
+
+    def process_all(self, midi_dir: str = "midis") -> list:
         print("Processing midis...")
 
         start = time.time()
         shutil.rmtree(self.data_dir)
         os.mkdir(self.data_dir)
+        try:
+            with open(self.vocab_file, "rb") as f:
+                vocabs = pickle.load(f)
+        except FileNotFoundError:
+            vocabs = []
 
         for file in os.listdir(midi_dir):
             mid = mido.MidiFile(os.path.join(midi_dir, file))
-            data = self.midi_to_data(mid)
+            data, vocabs = self.midi_to_data(mid, vocabs)
 
             with open(os.path.join(self.data_dir, os.path.split(file)[-1][:-3] + "npz"), "wb") as f:
-                np.savez_compressed(f, data)
+                np.savez_compressed(f, data[0], data[1])
 
+        with open(self.vocab_file, "wb") as f:
+            pickle.dump(vocabs, f)
+
+        self.vocabs = vocabs
         print("processed all midi files.")
-        print("time_taken: ", time.time()-start)
+        print("time_taken: ", time.time() - start)
+        return vocabs
 
     def get_dataset(self) -> Union[np.array, tf.data.Dataset]:
         def parse(array):
             if array.shape[0] < SEQ_LENGTH:
-                return [np.concatenate((array, np.tile([0, 0, 0], SEQ_LENGTH-array.shape[0])), axis=-1)]
+                return [np.concatenate((array, np.tile([0]*array.shape[-1], (SEQ_LENGTH-array.shape[0], 1))), axis=0)]
             else:
                 return_list = []
                 for i in range(array.shape[0]//SEQ_LENGTH):
@@ -114,48 +148,58 @@ class Ai(Interface):
                 return return_list
 
         X = []
+        y = []
 
         files = os.listdir(self.data_dir)
-        for i in range(3):
+        for i in range(2):
             random.shuffle(files)
             for file in files:
                 file_name = os.fsdecode(file)
                 with(open(os.path.join(self.data_dir, file_name), "rb")) as f:
                     loaded = np.load(f)
-                    data = loaded['arr_0']
-                    X += parse(data)
+                    data1, data2 = loaded['arr_0'], loaded['arr_1']
+                    X += parse(data1)
+                    y += parse(data2)
 
-        X = np.vstack(X)
-        print(f"X shape: {X.shape}, Num sequences: {X.shape[0]/SEQ_LENGTH}, Batches: {X.shape[0]/(SEQ_LENGTH*BATCH_SIZE)}")
-        dataset = tf.data.Dataset.from_tensor_slices((X, X))
+        X = np.array(X)
+        dataset = tf.data.Dataset.from_tensor_slices((X, y))
         return dataset
 
-    def build_encoder(self) -> keras.Model:
-        m = keras.Sequential([
-            keras.layers.Input(shape=(SEQ_LENGTH, 128,)),
+    def build_encoder(self, batch_size):
+        model = keras.Sequential([
+            keras.layers.Input(batch_input_shape=(batch_size, SEQ_LENGTH, 128)),
             keras.layers.Flatten(),
-            keras.layers.Dense(128, activation="relu")
+            keras.layers.Dense(ENCODER_DIM, activation="relu")
         ])
-        return m
+        return model
 
-    def build_decoder(self) -> keras.Model:
-        m = keras.Sequential([
-            keras.layers.Dense(SEQ_LENGTH*3, activation="tanh")
+    def build_decoder(self, batch_size):
+        model = keras.Sequential([
+            keras.layers.Input(batch_input_shape=(batch_size, ENCODER_DIM)),
+            keras.layers.Dense(SEQ_LENGTH*3*len(self.vocabs[2]), activation="tanh"),
+            keras.layers.Reshape((SEQ_LENGTH, 3, len(self.vocabs[2])))
         ])
-        return m
+        return model
 
-    def build_model(self, batch_size=None):
-        encoder = self.build_encoder()
-        decoder = self.build_decoder()
-        auto_encoder = keras.models.Model(encoder.layers[0], decoder.layers[-1])
-        return auto_encoder
+    def build_model(self, batch_size=BATCH_SIZE):
+        encoder = self.build_encoder(batch_size)
+        decoder = self.build_decoder(batch_size)
+
+        auto_encoder = keras.Model(encoder.input, decoder(encoder.output))
+
+        return encoder, decoder, auto_encoder
 
     def train(self, epochs=10, cont=False, lr=0.001, checkpoint_num=None):
         dataset = self.get_dataset()
         train_data = dataset.skip(BATCH_SIZE).batch(BATCH_SIZE, drop_remainder=True)
         test_data = dataset.take(BATCH_SIZE).repeat(3).batch(BATCH_SIZE, drop_remainder=True)
 
-        model = self.build_model()
+        model = self.build_model()[2]
+
+        # for d in train_data.take(1):
+        #     print(d)
+        #
+        # exit()
 
         ini_epoch = 0
         if cont:
@@ -176,7 +220,7 @@ class Ai(Interface):
                   callbacks=[checkpoint_call_back,
                              self.loss_callback(),
                              self.get_scheduler(lr, cont=cont),],
-                  verbose=2,
+                  verbose=1,
                   validation_data=test_data,
                   validation_freq=3,
                   )
@@ -196,5 +240,6 @@ if __name__ == "__main__":
     # for d in ai.get_dataset().take(1):
     #     print(d)
 
-    ai.train(100, cont=False)
+    # ai.build_model()
+    ai.train(1, cont=False)
 
